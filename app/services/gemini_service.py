@@ -1,6 +1,6 @@
 """
 Gemini Service v3.0
-Updated for google-genai SDK (2026)
+Uses google-generativeai SDK (deprecated but still working)
 """
 
 from dotenv import load_dotenv
@@ -15,9 +15,7 @@ import base64
 from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
 
-# New SDK import
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 
 # Import the research-backed prompt
 from app.prompts.ethological_prompt import ETHOLOGICAL_SYSTEM_PROMPT, QUICK_ANALYSIS_PROMPT
@@ -25,19 +23,23 @@ from app.prompts.ethological_prompt import ETHOLOGICAL_SYSTEM_PROMPT, QUICK_ANAL
 # Cache for storing analysis results
 _analysis_cache: Dict[str, Dict[str, Any]] = {}
 
-# Global client
-_client = None
+# Configure on module load
+_configured = False
 
 
-def get_client():
-    """Get or create the Genai client"""
-    global _client
-    if _client is None:
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY environment variable not set")
-        _client = genai.Client(api_key=api_key)
-    return _client
+def configure_genai():
+    """Configure the Gemini API"""
+    global _configured
+    if _configured:
+        return
+    
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY environment variable not set")
+    
+    genai.configure(api_key=api_key)
+    _configured = True
+    print("Gemini API configured")
 
 
 def get_video_hash(video_data: bytes) -> str:
@@ -82,31 +84,28 @@ def clear_cache() -> None:
     _analysis_cache.clear()
 
 
-def get_available_model() -> str:
-    """
-    Find an available Gemini model.
-    Prioritizes most advanced models first.
-    """
-    client = get_client()
+def get_available_model() -> Tuple[str, Any]:
+    """Find an available Gemini model."""
+    configure_genai()
     
-    # Models to try - most advanced first
+    # Models to try - stable ones first
     models_to_try = [
-        "gemini-2.0-flash",
         "gemini-1.5-flash",
         "gemini-1.5-pro",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro-latest",
+        "gemini-pro-vision",
     ]
     
     for model_name in models_to_try:
         try:
             print(f"Trying model: {model_name}")
+            model = genai.GenerativeModel(model_name)
             # Quick test
-            response = client.models.generate_content(
-                model=model_name,
-                contents="Say OK"
-            )
+            response = model.generate_content("Say OK")
             if response and response.text:
                 print(f"Successfully connected to model: {model_name}")
-                return model_name
+                return model_name, model
         except Exception as e:
             print(f"Model {model_name} failed: {e}")
             continue
@@ -115,9 +114,7 @@ def get_available_model() -> str:
 
 
 def parse_gemini_response(response_text: str) -> Dict[str, Any]:
-    """
-    Parse Gemini response, handling both JSON and markdown-wrapped JSON
-    """
+    """Parse Gemini response, handling both JSON and markdown-wrapped JSON"""
     if not response_text:
         return {"parse_error": True, "raw_response": "Empty response"}
     
@@ -167,16 +164,12 @@ def simplify_marker(marker: str) -> str:
         "EAD103": "Ears Back",
         "AD137": "Lip Licking",
         "AD19": "Tongue Out",
-        "AU101": "Inner Brow",
-        "AU102": "Outer Brow",
-        "AU143": "Eye Closure",
     }
     
     for code, simple in simplifications.items():
         if code.lower() in marker.lower():
             return simple
     
-    # Already simple or unknown
     words = marker.split()
     if len(words) <= 3:
         return marker
@@ -186,7 +179,6 @@ def simplify_marker(marker: str) -> str:
 def validate_and_enrich_response(result: Dict[str, Any]) -> Dict[str, Any]:
     """Validate and enrich the response with defaults"""
     
-    # Ensure overall_assessment exists
     if "overall_assessment" not in result:
         result["overall_assessment"] = {
             "distress_score": 50,
@@ -197,13 +189,11 @@ def validate_and_enrich_response(result: Dict[str, Any]) -> Dict[str, Any]:
     
     assessment = result["overall_assessment"]
     
-    # Validate distress_score
     if "distress_score" not in assessment:
         assessment["distress_score"] = 50
     else:
         assessment["distress_score"] = max(0, min(100, assessment["distress_score"]))
     
-    # Ensure zone matches score
     score = assessment["distress_score"]
     if score <= 33:
         assessment["zone"] = "green"
@@ -212,22 +202,18 @@ def validate_and_enrich_response(result: Dict[str, Any]) -> Dict[str, Any]:
     else:
         assessment["zone"] = "red"
     
-    # Ensure timeline exists
     if "timeline" not in result:
         result["timeline"] = []
     
-    # Simplify markers in visual_analysis
     if "visual_analysis" in result:
         if "action_units_detected" in result["visual_analysis"]:
             result["visual_analysis"]["action_units_detected"] = [
                 simplify_marker(m) for m in result["visual_analysis"]["action_units_detected"]
             ]
     
-    # Ensure interpret_lines exists
     if "interpret_lines" not in result:
         result["interpret_lines"] = []
     
-    # Ensure advisory exists
     if "advisory" not in result:
         result["advisory"] = {
             "headline": "Continue monitoring your pet's behavior.",
@@ -235,7 +221,6 @@ def validate_and_enrich_response(result: Dict[str, Any]) -> Dict[str, Any]:
             "urgency": "routine"
         }
     
-    # Add metadata
     result["_metadata"] = {
         "analysis_version": "3.0",
         "timestamp": time.time()
@@ -250,9 +235,8 @@ def analyze_video(
     use_cache: bool = True,
     analysis_mode: str = "full"
 ) -> Dict[str, Any]:
-    """
-    Analyze a pet video using Gemini.
-    """
+    """Analyze a pet video using Gemini."""
+    
     # Check cache first
     video_hash = get_video_hash(video_data)
     if use_cache:
@@ -261,9 +245,8 @@ def analyze_video(
             cached["_from_cache"] = True
             return cached
     
-    # Get client and model
-    client = get_client()
-    model_name = get_available_model()
+    # Get model
+    model_name, model = get_available_model()
     
     # Determine mime type
     extension = Path(filename).suffix.lower()
@@ -344,21 +327,23 @@ If NO dog or cat is visible, return:
 Return ONLY valid JSON, no markdown."""
 
     try:
-        # Create video part for the API
-        video_part = types.Part.from_bytes(
-            data=video_data,
-            mime_type=mime_type
-        )
+        # Create video part
+        video_part = {
+            "mime_type": mime_type,
+            "data": base64.b64encode(video_data).decode('utf-8')
+        }
         
         print(f"Sending video to {model_name}, size: {len(video_data)} bytes")
         
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[full_prompt, video_part],
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                max_output_tokens=8192
-            )
+        response = model.generate_content(
+            [
+                full_prompt,
+                {"inline_data": video_part}
+            ],
+            generation_config={
+                "temperature": 0.2,
+                "max_output_tokens": 8192
+            }
         )
         
         response_text = response.text if response else ""
@@ -418,8 +403,7 @@ def analyze_audio_only(
     """Analyze only the audio track from a video"""
     from app.prompts.ethological_prompt import AUDIO_ANALYSIS_PROMPT
     
-    client = get_client()
-    model_name = get_available_model()
+    model_name, model = get_available_model()
     
     extension = Path(filename).suffix.lower()
     mime_types = {
@@ -431,18 +415,20 @@ def analyze_audio_only(
     mime_type = mime_types.get(extension, "video/mp4")
     
     try:
-        video_part = types.Part.from_bytes(
-            data=video_data,
-            mime_type=mime_type
-        )
+        video_part = {
+            "mime_type": mime_type,
+            "data": base64.b64encode(video_data).decode('utf-8')
+        }
         
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[AUDIO_ANALYSIS_PROMPT, video_part],
-            config=types.GenerateContentConfig(
-                temperature=0.2,
-                max_output_tokens=4096
-            )
+        response = model.generate_content(
+            [
+                AUDIO_ANALYSIS_PROMPT,
+                {"inline_data": video_part}
+            ],
+            generation_config={
+                "temperature": 0.2,
+                "max_output_tokens": 4096
+            }
         )
         
         return parse_gemini_response(response.text)
