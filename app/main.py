@@ -6,10 +6,12 @@ and complete ethological research framework.
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 import tempfile
 import os
 import shutil
+import zipfile
+import io
 
 from .services.gemini_service import analyze_video
 from .services.yolo_pose_service import YoloPoseService
@@ -217,6 +219,32 @@ async def list_models():
         },
         "default": "gemini-2.0-flash",
     }
+
+
+@app.get("/api/research/bundle")
+async def download_research_bundle():
+    """
+    Download a ZIP archive of the complete Etho research pack:
+    MODEL_GUIDE.md, all framework reference cards, and references.bib.
+    Useful for priming a new AI model with the full ethological framework.
+    """
+    research_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "research")
+    if not os.path.isdir(research_dir):
+        raise HTTPException(status_code=404, detail="Research directory not found")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for fname in sorted(os.listdir(research_dir)):
+            if fname.endswith((".md", ".bib")):
+                fpath = os.path.join(research_dir, fname)
+                zf.write(fpath, arcname=f"etho-research/{fname}")
+
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=etho-research-pack.zip"},
+    )
 
 
 @app.exception_handler(Exception)
