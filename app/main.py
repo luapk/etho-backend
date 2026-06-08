@@ -4,7 +4,7 @@ Full video understanding with pose estimation, annotated video output,
 and complete ethological research framework.
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 import tempfile
@@ -20,6 +20,16 @@ from .services.video_annotator import (
     get_annotated_video_path,
     cleanup_old_videos,
 )
+
+_API_KEY = os.environ.get("API_KEY", "")
+
+
+async def require_api_key(x_api_key: str = Header(default="", alias="X-API-Key")):
+    """Reject requests that don't carry the correct API key.
+    If API_KEY env var is not set the check is skipped (local dev convenience)."""
+    if _API_KEY and x_api_key != _API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
 
 app = FastAPI(
     title="Etho API",
@@ -69,7 +79,7 @@ async def health_check():
     }
 
 
-@app.post("/api/video/upload")
+@app.post("/api/video/upload", dependencies=[Depends(require_api_key)])
 async def upload_and_analyze(
     file: UploadFile = File(...),
     mode: str = Query(default="full", description="Analysis mode: full or quick"),
@@ -221,7 +231,7 @@ async def list_models():
     }
 
 
-@app.get("/api/research/bundle")
+@app.get("/api/research/bundle", dependencies=[Depends(require_api_key)])
 async def download_research_bundle():
     """
     Download a ZIP archive of the complete Etho research pack:
