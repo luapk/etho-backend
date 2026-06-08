@@ -121,10 +121,11 @@ CRITICAL:
         return {"scene_summary": "Scene verification failed", "animals_visible": []}
 
 
-def analyze_video_with_context(video_file, scene_context: dict) -> str:
+def analyze_video_with_context(video_file, scene_context: dict, pose_metrics: dict = None) -> str:
     """
     PASS 2: Full ethological analysis WITH scene context locked in.
     The AI must analyze based on the verified scene, not hallucinated context.
+    pose_metrics: optional YOLO-derived measurements injected as objective ground truth.
     """
     print(f"  → Pass 2: Ethological analysis with verified context...")
     
@@ -147,6 +148,26 @@ def analyze_video_with_context(video_file, scene_context: dict) -> str:
     setting = scene_context.get('setting', 'unknown')
     scene_summary = scene_context.get('scene_summary', '')
     
+    # Build optional YOLO pose section
+    pose_section = ""
+    if pose_metrics:
+        pose_section = "\n## YOLO11-POSE MEASUREMENTS (Computer Vision Ground Truth)\n"
+        pose_section += "These are objectively measured from video frames — cite them when making posture claims.\n\n"
+        cov = pose_metrics.get("detection_coverage", 0)
+        pose_section += f"PET DETECTION COVERAGE: {cov:.0%} of sampled frames\n"
+        if "spinal_curvature" in pose_metrics:
+            sc = pose_metrics["spinal_curvature"]
+            pose_section += (f"SPINAL CURVATURE: mean {sc['mean_deg']}°, "
+                             f"peak {sc['max_deg']}° — {sc['interpretation']}\n")
+        if "head_tilt" in pose_metrics:
+            ht = pose_metrics["head_tilt"]
+            pose_section += f"HEAD TILT: mean {ht['mean_deg']}°, max {ht['max_abs_deg']}°\n"
+        pose_section += (
+            "\nINTEGRATION RULE: When describing posture, write e.g. "
+            "'shows 22° spinal curvature (YOLO-measured), consistent with submissive posture' "
+            "rather than vague terms like 'appears hunched'.\n"
+        )
+
     context_str = f"""
 ## VERIFIED SCENE CONTEXT (You must base your analysis on THIS, not assumptions)
 
@@ -163,7 +184,7 @@ ACTIONS OBSERVED: {', '.join(actions) if actions else 'None specified'}
 SCENE SUMMARY: {scene_summary}
 
 AUDIO: {scene_context.get('audio_description', 'Not analyzed')}
-
+{pose_section}
 ---
 
 CRITICAL INSTRUCTION: Your analysis MUST be consistent with the verified scene above.
@@ -345,7 +366,7 @@ def validate_and_enrich_response(result: dict, scene_context: dict) -> dict:
     return result
 
 
-def analyze_video(video_path: str, use_cache: bool = True) -> dict:
+def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = None) -> dict:
     """
     Main entry point for video analysis.
     Uses TWO-PASS VERIFICATION to prevent hallucinations:
@@ -382,10 +403,13 @@ def analyze_video(video_path: str, use_cache: bool = True) -> dict:
         print(f"  → Other animals: {scene_context.get('other_animals_present', [])}")
         print(f"  → Setting: {scene_context.get('setting', 'unknown')}")
         
-        # Step 3: Run ethological analysis (PASS 2) with verified context
-        print("\nStep 3/3: Running ethological analysis with verified context...")
+        # Step 3: Run ethological analysis (PASS 2) with verified context + pose data
+        if pose_metrics:
+            print(f"\nStep 3/3: Running ethological analysis (pose metrics injected)...")
+        else:
+            print("\nStep 3/3: Running ethological analysis with verified context...")
         
-        response_text = analyze_video_with_context(video_file, scene_context)
+        response_text = analyze_video_with_context(video_file, scene_context, pose_metrics)
         result = parse_json_response(response_text)
         
         # Check for parse errors
@@ -410,7 +434,9 @@ def analyze_video(video_path: str, use_cache: bool = True) -> dict:
         # Add metadata
         result["_model_used"] = "gemini-2.0-flash"
         result["_from_cache"] = False
-        result["_analysis_version"] = "etho-v15-verified"
+        result["_analysis_version"] = "etho-v16-pose"
+        if pose_metrics:
+            result["_pose_metrics"] = pose_metrics
         
         print(f"\n✓ Analysis complete!")
         print(f"  Species: {result.get('species', 'unknown')}")
