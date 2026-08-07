@@ -128,5 +128,14 @@ check("unknown batch 404", client.get("/api/batch/nope").status_code == 404)
 over = [("files", (f"f{i}.jpg", io.BytesIO(b"x"), "image/jpeg")) for i in range(31)]
 check("over-limit batch rejected", client.post("/api/batch/upload", files=over).status_code == 400)
 
+# ── Detector configuration ──
+from app.services import yolo_pose_service as yps
+check("detector defaults to yolo11m (nano was 3% detection)",
+      yps.DETECT_MODEL == "yolo11m.pt", yps.DETECT_MODEL)
+check("detector overridable via YOLO_MODEL", "YOLO_MODEL" in open(
+      "app/services/yolo_pose_service.py").read())
+check("pose stays nano (bigger human-pose model does not help animals)",
+      yps.POSE_MODEL == "yolo11n-pose.pt")
+
 print(f"\n{'='*40}\n{ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)

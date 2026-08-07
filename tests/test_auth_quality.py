@@ -214,8 +214,12 @@ rmd = vr.render_markdown(vr.build_report(rpet["id"]))
 check("vet report SRR section + sleeping-only note",
       "Sleeping Respiratory Rate (measured)" in rmd and "[> 30/min]" in rmd
       and "guardian-tagged SLEEPING clips" in rmd)
-check("feed carries srr_bpm",
-      [i for i in pet_store.get_timeline_feed(rpet["id"]) if i["type"] == "analysis"][0]["srr_bpm"] == 34.0)
+_rfeed = [i for i in pet_store.get_timeline_feed(rpet["id"]) if i["type"] == "analysis"]
+check("feed carries srr_bpm for the usable reading",
+      _rfeed[0]["srr_bpm"] == 34.0, _rfeed)
+check("feed omits srr_bpm for the refused reading", _rfeed[1]["srr_bpm"] is None)
+check("same-second records keep insertion order",
+      _rfeed[0]["date"] < _rfeed[1]["date"], [i["date"] for i in _rfeed])
 
 # ── Storage detection & config status ──
 import importlib

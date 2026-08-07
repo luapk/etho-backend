@@ -11,12 +11,34 @@ and visual skeleton overlay. Upgrade to an AP-10K animal pose model for
 production-grade keypoint accuracy.
 """
 
+import os
+
 import cv2
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional
 
 ANIMAL_CLASSES = {15: "cat", 16: "dog"}
+
+# Detector size is the single biggest lever on whether a pet is found at
+# all. Measured on a real cat clip (65 frames, conf 0.25), detection rate:
+#
+#   yolo11n   2.6M params    3%   0.07 s/frame   <- the old default
+#   yolo11s   9.5M params   34%   0.10 s/frame
+#   yolo11m  20.1M params   49%   0.25 s/frame   <- current default
+#   yolo11l  25.4M params   45%   0.28 s/frame
+#   yolo11x  57.0M params   48%   0.53 s/frame
+#
+# The nano model was effectively blind to a cat lying flat — the exact
+# posture that matters clinically — while correctly finding humans in the
+# same frames. Medium is the quality/latency sweet spot; set YOLO_MODEL to
+# yolo11s.pt if per-request latency matters more than detection rate.
+DETECT_MODEL = os.environ.get("YOLO_MODEL", "yolo11m.pt")
+# Pose weights stay nano: the pose model is human-trained (COCO-17), so a
+# larger one finds *humans* better, not animals. Real gains here need an
+# animal-trained model (AP-10K / SuperAnimal) — see
+# scripts/compare_pose_models.py.
+POSE_MODEL = os.environ.get("YOLO_POSE_MODEL", "yolo11n-pose.pt")
 
 # COCO-17 skeleton connections used for visual overlay
 SKELETON_CONNECTIONS = [
@@ -79,10 +101,10 @@ class YoloPoseService:
     def _load_models(self):
         try:
             from ultralytics import YOLO
-            self._detect_model = YOLO("yolo11n.pt")
-            self._pose_model = YOLO("yolo11n-pose.pt")
+            self._detect_model = YOLO(DETECT_MODEL)
+            self._pose_model = YOLO(POSE_MODEL)
             self._available = True
-            print("  ✓ YOLO11-Pose models loaded")
+            print(f"  ✓ YOLO loaded: {DETECT_MODEL} (detect) + {POSE_MODEL} (pose)")
         except Exception as e:
             print(f"  ⚠ YOLO unavailable: {e}")
 

@@ -207,7 +207,12 @@ def _ensure_column(conn, table: str, col: str, decl: str):
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # Microsecond precision, not seconds: a batch import can log several
+    # analyses inside the same second, and second-precision timestamps left
+    # their order in the timeline feed to be decided by random UUID
+    # comparison. Insertion order is the meaningful fallback when two
+    # observations share a capture time.
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def _connect() -> sqlite3.Connection:
