@@ -1,14 +1,21 @@
 """
-YOLO11-Pose service for real-time pet detection and pose estimation.
+YOLO detection service for pets, with optional (disabled) pose estimation.
 
-Extracts bounding boxes, keypoints, and derived biomechanical metrics
-(spinal angle, head tilt) that are injected into Gemini's context as
-objective ground truth, preventing hallucinated posture claims.
+WHAT THIS PROVIDES TODAY: per-frame cat/dog detection and bounding boxes.
+Those feed the framing quality check, the ROI for respiration and motion
+health signals, the annotated-video overlay, and postural-sway measurement.
+Detection is solid — cat and dog are genuine COCO classes and yolo11m hits
+98% frame coverage on real footage.
 
-Note: yolo11n-pose.pt is trained on human poses (COCO 17-keypoint).
-It approximates pet body regions well enough for spinal angle calculation
-and visual skeleton overlay. Upgrade to an AP-10K animal pose model for
-production-grade keypoint accuracy.
+WHAT IT DOES NOT PROVIDE: keypoints. Pose estimation is OFF by default
+because the only available weights are human-trained (COCO-17), and on a
+quadruped they yield a confident human fit rather than approximate animal
+anatomy — see the ENABLE_POSE comment below for the measured evidence.
+Consequently spinal curvature, head tilt, and face visibility are not
+reported unless an animal-trained model is supplied.
+
+Supply one (AP-10K / SuperAnimal) via YOLO_POSE_MODEL + ENABLE_POSE=1, and
+validate it with scripts/compare_pose_models.py before trusting its output.
 """
 
 import os
@@ -34,11 +41,31 @@ ANIMAL_CLASSES = {15: "cat", 16: "dog"}
 # same frames. Medium is the quality/latency sweet spot; set YOLO_MODEL to
 # yolo11s.pt if per-request latency matters more than detection rate.
 DETECT_MODEL = os.environ.get("YOLO_MODEL", "yolo11m.pt")
-# Pose weights stay nano: the pose model is human-trained (COCO-17), so a
-# larger one finds *humans* better, not animals. Real gains here need an
-# animal-trained model (AP-10K / SuperAnimal) — see
-# scripts/compare_pose_models.py.
+# ── Pose estimation is DISABLED by default ───────────────────────────────────
+#
+# The available pose weights are HUMAN-trained (COCO-17). Running them on a
+# quadruped does not produce approximate animal anatomy — it produces a
+# confident human fit to the wrong animal. Measured on a clear frontal frame
+# of a sitting pug, the model returned 13/17 keypoints at 0.92-0.98
+# confidence — shoulders, elbows, wrists, hips, knees, ankles — having read
+# the dog's front legs as human legs. The nose and both eyes were absent.
+#
+# That absence was fatal: the spinal-angle calculation substituted a
+# hardcoded [0, -1] "straight up" vector whenever the nose was missing, so
+# the angle was computed from INVENTED input against mis-assigned keypoints.
+# It reported 75 deg mean / 165 deg peak and "extreme fear crouch" for a
+# calm dog. Reliability gates catch that after the fact, but stable garbage
+# would still pass them — a static clip can yield consistently wrong
+# keypoints. The honest fix is not to run the model at all.
+#
+# Detection (above) is unaffected and stays on: cat and dog are real COCO
+# classes and it works well (98% coverage on that same clip).
+#
+# To re-enable, supply an ANIMAL-trained model (AP-10K / SuperAnimal):
+#     YOLO_POSE_MODEL=/path/to/animal-pose.pt ENABLE_POSE=1
+# and validate it first with scripts/compare_pose_models.py.
 POSE_MODEL = os.environ.get("YOLO_POSE_MODEL", "yolo11n-pose.pt")
+ENABLE_POSE = os.environ.get("ENABLE_POSE", "").strip().lower() in ("1", "true", "yes")
 
 # COCO-17 skeleton connections used for visual overlay
 SKELETON_CONNECTIONS = [
@@ -127,9 +154,15 @@ class YoloPoseService:
         try:
             from ultralytics import YOLO
             self._detect_model = YOLO(DETECT_MODEL)
-            self._pose_model = YOLO(POSE_MODEL)
+            if ENABLE_POSE:
+                self._pose_model = YOLO(POSE_MODEL)
+                print(f"  ✓ YOLO loaded: {DETECT_MODEL} (detect) + {POSE_MODEL} (pose)")
+                print("    ⚠ Pose enabled — verify the weights are ANIMAL-trained; "
+                      "human COCO-17 keypoints produce confident nonsense on pets")
+            else:
+                print(f"  ✓ YOLO loaded: {DETECT_MODEL} (detect); pose disabled "
+                      f"(no animal-trained model — set ENABLE_POSE=1 to override)")
             self._available = True
-            print(f"  ✓ YOLO loaded: {DETECT_MODEL} (detect) + {POSE_MODEL} (pose)")
         except Exception as e:
             print(f"  ⚠ YOLO unavailable: {e}")
 
@@ -190,9 +223,10 @@ class YoloPoseService:
             if not det_results or not len(det_results[0].boxes):
                 return pose_frame
 
-            pose_results = self._pose_model(frame, verbose=False)
             pose_boxes = None
             pose_kps = None
+            pose_results = (self._pose_model(frame, verbose=False)
+                            if self._pose_model is not None else None)
             if pose_results and pose_results[0].boxes is not None:
                 pose_boxes = pose_results[0].boxes.xyxy.cpu().numpy()
                 if pose_results[0].keypoints is not None:
@@ -251,9 +285,14 @@ class YoloPoseService:
         mid_s = np.array([(ls[0] + rs[0]) / 2, (ls[1] + rs[1]) / 2])
         mid_h = np.array([(lh[0] + rh[0]) / 2, (lh[1] + rh[1]) / 2])
 
+        if nose is None:
+            # Previously this substituted a hardcoded [0, -1] "straight up"
+            # vector, fabricating the input the angle is measured against.
+            # Absent a nose there is no measurement to make.
+            return None
+
         v2 = mid_h - mid_s
-        v1 = np.array([nose[0] - mid_s[0], nose[1] - mid_s[1]]) if nose is not None \
-            else np.array([0.0, -1.0])
+        v1 = np.array([nose[0] - mid_s[0], nose[1] - mid_s[1]])
 
         n1, n2 = np.linalg.norm(v1), np.linalg.norm(v2)
         if n1 == 0 or n2 == 0:
@@ -306,7 +345,13 @@ class YoloPoseService:
             "detection_coverage": round(frames_with_pet / total, 2),
             "frames_analyzed": len(pose_frames),
         }
-        if frames_with_pet:
+        # Only report face visibility when keypoints actually exist. With pose
+        # disabled the figure would be a constant 0.0, which reads as "the face
+        # was never visible" and would wrongly tell guardians to re-film.
+        # Absent a measurement, report nothing.
+        if frames_with_pet and any(
+            a.keypoints is not None for pf in pose_frames for a in pf.animals
+        ):
             summary["face_visibility"] = round(frames_with_face / frames_with_pet, 2)
 
         if spinal_vals:

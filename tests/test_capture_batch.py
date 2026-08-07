@@ -6,6 +6,14 @@ sys.modules['google'].generativeai = sys.modules['google.generativeai']
 os.environ['DATA_DIR'] = tempfile.mkdtemp()
 
 import numpy as np
+
+def _no_nose_kps():
+    """Confident shoulders/hips but no nose — exactly what the human-pose
+    model returns on a dog."""
+    k = np.zeros((17, 3))
+    for i in (5, 6, 11, 12):
+        k[i] = [10 + i, 20 + i, 0.95]
+    return k
 from datetime import datetime, timezone, timedelta
 from app.services import pet_store, media_metadata
 from app.services.health_signals import HealthSignalService, _band_stats
@@ -170,6 +178,20 @@ from app.services.gemini_service import analyze_video_with_context as _avc
 import inspect
 src = inspect.getsource(_avc)
 check("Pass 2 gates on reliability", "NOT RELIABLY MEASURABLE" in src)
+
+# ── Pose disabled by default (human keypoints fit a human to the dog) ──
+check("pose estimation off by default", yps.ENABLE_POSE is False)
+check("no invented nose vector remains",
+      "0.0, -1.0" not in open("app/services/yolo_pose_service.py").read())
+_svc3 = yps.YoloPoseService.__new__(yps.YoloPoseService)
+check("missing nose -> no measurement (was fabricated)",
+      _svc3._spinal_angle(_no_nose_kps()) is None)
+check("detection still enabled", yps.DETECT_MODEL == "yolo11m.pt")
+_nokp = [yps.PoseFrame(0, 0.0, [yps.AnimalPose(bbox=(0,0,9,9), confidence=0.9,
+    class_id=16, class_name="dog", keypoints=None)])]
+_m = _svc3.summarize_metrics(_nokp)
+check("no face_visibility reported without keypoints", "face_visibility" not in _m, _m)
+check("detection_coverage still reported", _m["detection_coverage"] == 1.0)
 
 print(f"\n{'='*40}\n{ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)
