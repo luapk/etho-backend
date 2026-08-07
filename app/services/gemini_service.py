@@ -11,6 +11,7 @@ import re
 import google.generativeai as genai
 from ..prompts.ethological_prompt import ETHOLOGICAL_SYSTEM_PROMPT, PROMPT_VERSION
 from . import model_selector
+from .respiration_service import SRR_THRESHOLD_BPM as SRR_THRESHOLD
 
 # Model is configurable so upgrades are a config change, not a deploy of new
 # code. Every stored analysis is stamped with the model that produced it
@@ -193,6 +194,28 @@ def _build_audio_section(audio_metrics: dict) -> str:
     return s
 
 
+def _build_resp_section(respiration: dict) -> str:
+    """Measured sleeping respiratory rate for Pass 2 — only for clips the
+    guardian tagged as sleeping, and only when the DSP judged it usable."""
+    if not respiration or not respiration.get("usable"):
+        return ""
+    bpm = respiration["breaths_per_min"]
+    s = "\n## RESPIRATORY MEASUREMENT (Sleeping clip — Signal-Processing Ground Truth)\n"
+    s += (f"SLEEPING RESPIRATORY RATE: {bpm} breaths/min "
+          f"({respiration.get('confidence')} confidence, "
+          f"{respiration.get('window_sec')}s window, measured from chest "
+          f"motion)\n")
+    s += (f"CONTEXT: {respiration.get('threshold_note')}\n"
+          "INTEGRATION RULE: This clip was submitted as a SLEEPING baseline. "
+          "Cite this measured rate in any respiratory observation. If the "
+          f"rate exceeds {SRR_THRESHOLD} breaths/min, note it as exceeding "
+          "the published sleeping-RR screening threshold and recommend "
+          "discussing with a vet — do NOT name a diagnosis. If the animal "
+          "does not appear asleep in this clip, say so explicitly: the "
+          "measurement is only valid for a sleeping pet.\n")
+    return s
+
+
 _IMAGE_MODE_ADDENDUM = """
 ## IMAGE MODE
 This submission is a SINGLE STILL IMAGE, not a video. Adapt accordingly:
@@ -205,7 +228,8 @@ This submission is a SINGLE STILL IMAGE, not a video. Adapt accordingly:
 
 
 def analyze_video_with_context(video_file, scene_context: dict, pose_metrics: dict = None,
-                               audio_metrics: dict = None, media_kind: str = "video") -> str:
+                               audio_metrics: dict = None, media_kind: str = "video",
+                               respiration: dict = None) -> str:
     """
     PASS 2: Full ethological analysis WITH scene context locked in.
     The AI must analyze based on the verified scene, not hallucinated context.
@@ -265,6 +289,7 @@ def analyze_video_with_context(video_file, scene_context: dict, pose_metrics: di
         )
 
     audio_section = _build_audio_section(audio_metrics)
+    resp_section = _build_resp_section(respiration)
     image_section = _IMAGE_MODE_ADDENDUM if media_kind == "image" else ""
 
     context_str = f"""
@@ -283,7 +308,7 @@ ACTIONS OBSERVED: {', '.join(actions) if actions else 'None specified'}
 SCENE SUMMARY: {scene_summary}
 
 AUDIO: {scene_context.get('audio_description', 'Not analyzed')}
-{pose_section}{audio_section}{image_section}
+{pose_section}{audio_section}{resp_section}{image_section}
 ---
 
 CRITICAL INSTRUCTION: Your analysis MUST be consistent with the verified scene above.
@@ -306,6 +331,7 @@ SPECIAL CONSIDERATIONS:
 - A cat watching guinea pigs/hamsters/birds is showing PREDATORY INTEREST, not door frustration
 - A dog watching squirrels is showing PREY DRIVE, not anxiety
 - Inter-species interactions require careful assessment of both animals' safety
+- A cat breathing with an OPEN MOUTH (not vocalizing) is an urgent red flag: note it prominently and set advisory urgency to critical
 
 Pay close attention to:
 1. MICRO-EXPRESSIONS: Brief facial signals
@@ -504,7 +530,8 @@ def validate_and_enrich_response(result: dict, scene_context: dict) -> dict:
 
 
 def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = None,
-                  audio_metrics: dict = None, media_kind: str = "video") -> dict:
+                  audio_metrics: dict = None, media_kind: str = "video",
+                  respiration: dict = None) -> dict:
     """
     Main entry point for video analysis.
     Uses TWO-PASS VERIFICATION to prevent hallucinations:
@@ -548,7 +575,7 @@ def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = 
             print("\nStep 3/3: Running ethological analysis with verified context...")
         
         response_text = analyze_video_with_context(video_file, scene_context, pose_metrics,
-                                                   audio_metrics, media_kind)
+                                                   audio_metrics, media_kind, respiration)
         result = parse_json_response(response_text)
         
         # Check for parse errors
@@ -580,6 +607,8 @@ def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = 
             result["_pose_metrics"] = pose_metrics
         if audio_metrics:
             result["_audio_metrics"] = audio_metrics
+        if respiration:
+            result["_respiration"] = respiration
         
         print(f"\n✓ Analysis complete!")
         print(f"  Species: {result.get('species', 'unknown')}")

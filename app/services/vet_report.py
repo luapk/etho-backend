@@ -136,6 +136,17 @@ def build_report(pet_id: str, reason_for_visit: str = None) -> dict:
             "observation_count": len(history),
         },
         "trends": trends,
+        "respiratory": {
+            "entries": [
+                {"created_at": h["created_at"],
+                 "breaths_per_min": h["resp_rate_bpm"],
+                 "confidence": h.get("resp_confidence")}
+                for h in history if h.get("resp_rate_bpm") is not None
+            ],
+            "threshold_note": ("Published sleeping-RR screening threshold: "
+                               "> 30/min sustained. Measured ONLY from clips "
+                               "the guardian tagged as sleeping."),
+        },
         "weight": weight_block,
         "observations": history,
         "recurring_markers": markers,
@@ -162,6 +173,15 @@ def build_report(pet_id: str, reason_for_visit: str = None) -> dict:
                 "interpreted. Dogs: an OBSERVABLE SUBSET of Glasgow CMPS-SF "
                 "categories scored from video at a distance — explicitly not a "
                 "validated administration."
+            ),
+            "respiratory": (
+                "Sleeping respiratory rate is measured by signal processing "
+                "(chest-motion displacement, spectral analysis) ONLY from "
+                "clips the guardian explicitly tagged as showing the pet "
+                "asleep; clips with too much movement are rejected rather "
+                "than reported. The > 30/min screening threshold is from "
+                "veterinary cardiology home-monitoring literature and is "
+                "reported, not interpreted."
             ),
             "weight_screening": (
                 "Weight is compared against typical adult breed ranges "
@@ -272,6 +292,23 @@ def render_markdown(report: dict) -> str:
         add(f"> {wa.get('note', '')}")
         add("")
 
+    resp = report.get("respiratory", {})
+    if resp.get("entries"):
+        add("## Sleeping Respiratory Rate (measured)")
+        add("")
+        add("Measured only from guardian-tagged SLEEPING clips; awake or "
+            "moving clips are rejected, not reported.")
+        add("")
+        add("| Date | Breaths/min | Confidence |")
+        add("|---|---|---|")
+        for e in resp["entries"]:
+            flag = " **[> 30/min]**" if e["breaths_per_min"] and e["breaths_per_min"] > 30 else ""
+            add(f"| {e['created_at'][:10]} | {e['breaths_per_min']}{flag} "
+                f"| {e.get('confidence') or '—'} |")
+        add("")
+        add(f"> {resp['threshold_note']}")
+        add("")
+
     add("## Observation Log")
     add("")
     add("AI-estimated columns: Distress, Zone, Instrument. "
@@ -312,6 +349,7 @@ def render_markdown(report: dict) -> str:
     add(f"- **Measured metrics:** {meth['measured_metrics']}")
     add(f"- **AI-estimated metrics:** {meth['ai_estimated_metrics']}")
     add(f"- **Instruments:** {meth['instruments']}")
+    add(f"- **Respiratory rate:** {meth['respiratory']}")
     add(f"- **Weight screening:** {meth['weight_screening']}")
     add(f"- **Baseline math:** {meth['baseline_math']}")
     add("- **System versions used:** " + "; ".join(

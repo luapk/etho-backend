@@ -18,7 +18,7 @@ Quality is FEEDBACK, not a gate — a poor clip is still analysed, because an
 incident clip of a limping dog is valuable even if it's dark and shaky.
 """
 
-PROTOCOL_VERSION = "1.0"
+PROTOCOL_VERSION = "1.1"
 
 CAPTURE_PROTOCOL = {
     "protocol_version": PROTOCOL_VERSION,
@@ -36,6 +36,9 @@ CAPTURE_PROTOCOL = {
          "description": "Something concerning is happening right now (limping, distress, conflict)."},
         {"tag": "post_vet", "label": "Post-vet check",
          "description": "Follow-up after treatment or medication change."},
+        {"tag": "sleeping_baseline", "label": "Sleeping (breathing rate)",
+         "description": "Your pet FULLY ASLEEP — the only context where "
+                        "breathing rate is measured. Meaningless on an awake pet."},
         {"tag": "other", "label": "Other", "description": "Anything else."},
     ],
     "video_baseline": {
@@ -58,6 +61,27 @@ CAPTURE_PROTOCOL = {
             "Keep filming through the episode if safe — duration reveals patterns",
             "Don't switch rooms/lights mid-clip if avoidable",
             "Tag the upload as 'incident' so it isn't mixed into baseline trends",
+        ],
+    },
+    "sleeping_srr": {
+        "title": "Sleeping breathing-rate clip (SRR)",
+        "requires_sleeping_pet": True,
+        "why": (
+            "Sleeping respiratory rate is the one home measurement with "
+            "published veterinary thresholds behind it — vets already ask "
+            "cardiac patients' owners to count it by hand. It is ONLY valid "
+            "while the pet is fully asleep: an awake, moving, or panting "
+            "animal makes the number meaningless, so Etho refuses to report "
+            "a rate from those clips."
+        ),
+        "rules": [
+            "Pet must be FULLY ASLEEP — not dozing, not settling, asleep",
+            "Not panting, and not within an hour of exercise or stress",
+            "Prop the phone still (lean it on something) — do not hand-hold",
+            "Whole chest/flank visible; film from the side if possible",
+            "30-60 seconds; longer is better for accuracy",
+            "Don't zoom, don't move the camera, don't wake them",
+            "Tag the upload as 'Sleeping (breathing rate)'",
         ],
     },
     "photo": {
@@ -86,7 +110,7 @@ def _check(name, status, measured, threshold, advice):
 
 def assess(media_type: str, pose_metrics: dict = None,
            audio_metrics: dict = None, media_meta: dict = None,
-           yolo_available: bool = True) -> dict:
+           yolo_available: bool = True, respiration: dict = None) -> dict:
     """Grade a submission's technical capture quality from already-computed
     data. Never raises; unknown inputs degrade to 'unknown' status checks."""
     pose_metrics = pose_metrics or {}
@@ -195,6 +219,23 @@ def assess(media_type: str, pose_metrics: dict = None,
                 checks.append(_check("pet_visible", "warn", "no pet detected by pose model",
                                      "detected",
                                      "Pose model found no cat/dog — the AI analysis may still work, but framing per the photo guide helps."))
+
+    # ── Respiratory measurability (sleeping_baseline clips only) ──
+    if respiration is not None:
+        if respiration.get("usable"):
+            checks.append(_check(
+                "respiration", "pass",
+                f"{respiration['breaths_per_min']} breaths/min "
+                f"({respiration.get('confidence')} confidence)",
+                "measurable from a sleeping clip", None))
+        else:
+            checks.append(_check(
+                "respiration", "warn",
+                respiration.get("reason", "not measurable"),
+                "pet fully asleep, camera propped still, 30s+",
+                "Breathing rate needs a SLEEPING pet: prop the camera still, "
+                "keep the chest/flank in frame, and film for 30-60 seconds "
+                "without waking them."))
 
     statuses = {c["status"] for c in checks}
     grade = "poor" if "fail" in statuses else ("fair" if "warn" in statuses else "good")

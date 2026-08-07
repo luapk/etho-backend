@@ -96,7 +96,7 @@ M._API_KEY = ""
 r = client.get("/api/capture-protocol")
 check("protocol endpoint open", r.status_code == 200)
 proto = r.json()["protocol"]
-check("protocol has contexts + rules", len(proto["contexts"]) == 4 and "video_baseline" in proto)
+check("protocol has contexts + rules", len(proto["contexts"]) == 5 and "video_baseline" in proto)
 
 # ── Face visibility (capture check + YOLO summary + model config) ──
 import numpy as np
@@ -161,6 +161,61 @@ qh = pet_store.get_history(qpet["id"])
 check("quality_grade stored + in history", qh[0]["quality_grade"] == "fair", qh[0])
 qmd = vr.render_markdown(vr.build_report(qpet["id"]))
 check("vet report has Quality column", "| Quality |" in qmd and "| fair " in qmd.replace("| fair |", "| fair "))
+
+# ── Sleeping respiratory rate (SRR) ──
+from app.services.respiration_service import estimate_rate_from_signal, SRR_THRESHOLD_BPM
+
+fs = 10.0
+t = np.arange(0, 60, 1 / fs)
+clean = 3 * np.sin(2 * np.pi * 0.4 * t) + np.random.default_rng(1).normal(0, 0.3, t.size)
+est = estimate_rate_from_signal(clean, fs)
+check("SRR: 0.4Hz signal -> ~24 bpm", est["breaths_per_min"] and abs(est["breaths_per_min"] - 24) <= 1.5, est)
+check("SRR: clean signal high confidence", est["confidence"] == "high")
+check("SRR: noise -> low confidence",
+      estimate_rate_from_signal(np.random.default_rng(2).normal(0, 1, 600), fs)["confidence"] == "low")
+check("SRR: threshold constant is 30", SRR_THRESHOLD_BPM == 30)
+
+proto = capture_quality.CAPTURE_PROTOCOL
+check("protocol has sleeping context tag",
+      any(c["tag"] == "sleeping_baseline" for c in proto["contexts"]))
+check("protocol sleeping section demands sleep",
+      proto["sleeping_srr"]["requires_sleeping_pet"] is True
+      and any("FULLY ASLEEP" in r for r in proto["sleeping_srr"]["rules"]))
+
+q_ok = capture_quality.assess("video", {}, {}, {}, respiration={
+    "usable": True, "breaths_per_min": 22.0, "confidence": "high"})
+check("quality: usable SRR passes",
+      any(c["check"] == "respiration" and c["status"] == "pass" for c in q_ok["checks"]))
+q_bad = capture_quality.assess("video", {}, {}, {}, respiration={
+    "usable": False, "reason": "too much movement — the pet must be asleep"})
+check("quality: refused SRR warns with sleeping advice",
+      any(c["check"] == "respiration" and "SLEEPING" in (c["advice"] or "") for c in q_bad["checks"]))
+check("quality: no SRR check on ordinary uploads",
+      not any(c["check"] == "respiration"
+              for c in capture_quality.assess("video", {}, {}, {})["checks"]))
+
+rpet = pet_store.create_pet({"name": "R", "species": "dog", "breed": "Boxer"})
+pet_store.log_analysis(rpet["id"], {
+    "species": "dog", "overall_assessment": {"distress_score": 15, "zone": "green"},
+    "_respiration": {"usable": True, "breaths_per_min": 34.0, "confidence": "high"},
+}, media_type="video", context="sleeping_baseline")
+pet_store.log_analysis(rpet["id"], {
+    "species": "dog", "overall_assessment": {"distress_score": 15, "zone": "green"},
+    "_respiration": {"usable": False, "reason": "too much movement",
+                     "breaths_per_min": 55.0},
+}, media_type="video", context="sleeping_baseline")
+rh = pet_store.get_history(rpet["id"])
+check("SRR stored only when usable",
+      rh[0]["resp_rate_bpm"] == 34.0 and rh[1]["resp_rate_bpm"] is None, rh)
+rt = pet_store.compute_trends(rpet["id"])
+check("SRR > 30 raises red flag",
+      any(f["type"] == "srr_threshold" and "34.0" in f["detail"] for f in rt["red_flags"]))
+rmd = vr.render_markdown(vr.build_report(rpet["id"]))
+check("vet report SRR section + sleeping-only note",
+      "Sleeping Respiratory Rate (measured)" in rmd and "[> 30/min]" in rmd
+      and "guardian-tagged SLEEPING clips" in rmd)
+check("feed carries srr_bpm",
+      [i for i in pet_store.get_timeline_feed(rpet["id"]) if i["type"] == "analysis"][0]["srr_bpm"] == 34.0)
 
 # ── Storage detection & config status ──
 import importlib

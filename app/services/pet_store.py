@@ -186,6 +186,8 @@ _MIGRATIONS = [
     ("analyses", "context", "TEXT"),        # capture context tag, e.g. weekly_baseline
     ("analyses", "quality_grade", "TEXT"),  # good|fair|poor — so trend views can
                                             # de-emphasise low-quality observations
+    ("analyses", "resp_rate_bpm", "REAL"),      # measured sleeping respiratory rate
+    ("analyses", "resp_confidence", "TEXT"),    # high|medium — only usable rates stored
 ]
 
 
@@ -326,6 +328,7 @@ def log_analysis(pet_id, result: dict, media_type: str,
     am = result.get("_audio_metrics", {}) or {}
     ins = result.get("instrument_scores", {}) or {}
     cq = result.get("capture_quality", {}) or {}
+    resp = result.get("_respiration", {}) or {}
     sc = pm.get("spinal_curvature", {}) or {}
     pitch = am.get("pitch", {}) or {}
     purr = am.get("solicitation_purr", {}) or {}
@@ -338,8 +341,8 @@ def log_analysis(pet_id, result: dict, media_type: str,
             "instrument_max, instrument_scorable, spinal_mean_deg, spinal_max_deg, "
             "detection_coverage, vocal_event_count, pitch_mean_hz, purr_possible, "
             "pipeline_version, prompt_version, model_used, full_json, owner_id, context, "
-            "quality_grade) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "quality_grade, resp_rate_bpm, resp_confidence) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 analysis_id, pet_id, _utcnow(), media_type, source_filename,
                 file_size_bytes,
@@ -361,6 +364,8 @@ def log_analysis(pet_id, result: dict, media_type: str,
                 owner_id,
                 context,
                 cq.get("grade"),
+                resp.get("breaths_per_min") if resp.get("usable") else None,
+                resp.get("confidence") if resp.get("usable") else None,
             ),
         )
     return analysis_id
@@ -371,7 +376,8 @@ def get_history(pet_id: str, limit: int = 200) -> list:
     full JSON blob — use get_analysis for a complete record."""
     with _lock, _connect() as conn:
         rows = conn.execute(
-            "SELECT id, created_at, media_type, context, quality_grade, source_filename, distress_score, zone, "
+            "SELECT id, created_at, media_type, context, quality_grade, resp_rate_bpm, "
+            "resp_confidence, source_filename, distress_score, zone, "
             "confidence, primary_state, species_detected, breed_detected, urgency, "
             "instrument, instrument_total, instrument_max, instrument_scorable, "
             "spinal_mean_deg, spinal_max_deg, detection_coverage, vocal_event_count, "
@@ -487,6 +493,8 @@ def get_timeline_feed(pet_id: str, limit: int = 200) -> list:
             "instrument_total": ins.get("total"),
             "instrument_max": ins.get("max_total"),
             "quality_grade": cq.get("grade"),
+            "srr_bpm": (result.get("_respiration", {}) or {}).get("breaths_per_min")
+                       if (result.get("_respiration", {}) or {}).get("usable") else None,
             "distress_curve": curve,
         })
 
@@ -577,5 +585,13 @@ def compute_trends(pet_id: str) -> dict:
             flags.append({"created_at": h["created_at"], "type": "fgs_threshold",
                           "detail": f"FGS {h['instrument_total']}/10 (published "
                                     f"analgesia-consideration threshold is >= 4/10)"})
+        if (h.get("resp_rate_bpm") is not None
+                and h["resp_rate_bpm"] > 30):
+            flags.append({"created_at": h["created_at"], "type": "srr_threshold",
+                          "detail": (f"Sleeping respiratory rate "
+                                     f"{h['resp_rate_bpm']}/min measured "
+                                     f"({h.get('resp_confidence')} confidence) — "
+                                     f"published screening threshold is > 30/min "
+                                     f"sustained (reported, not interpreted)")})
     out["red_flags"] = flags
     return out

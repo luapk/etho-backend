@@ -18,6 +18,7 @@ import io
 from .services.gemini_service import analyze_video, GEMINI_MODEL
 from .services.yolo_pose_service import YoloPoseService
 from .services.audio_service import AudioService
+from .services.respiration_service import RespirationService
 from .services import (
     pet_store, vet_report, capture_quality, breed_reference, model_selector,
 )
@@ -88,6 +89,8 @@ app.add_middleware(
 _yolo = YoloPoseService()
 # Initialise audio acoustic service once at startup (checks ffmpeg + scipy)
 _audio = AudioService()
+# Sleeping respiratory-rate service (runs ONLY on context=sleeping_baseline)
+_resp = RespirationService()
 # Initialise the longitudinal pet/analysis store (SQLite at $DATA_DIR/etho.db)
 pet_store.init_db()
 
@@ -221,6 +224,7 @@ async def root():
             "Morton's motivation-structural rules",
             "Breed morphology normalisation",
             "Two-pass hallucination prevention",
+            "Sleeping respiratory rate (SRR) — sleeping-tagged clips only",
             "Longitudinal pet records + trend baselines",
             "Pre-consultation vet reports",
         ],
@@ -332,10 +336,22 @@ async def upload_and_analyze(
         else:
             print("\nStep 1b: Audio skipped (ffmpeg/scipy unavailable)")
 
+        # ── Step 1c: Sleeping respiratory rate ────────────────────────────
+        # ONLY for clips the guardian tagged as a sleeping clip: SRR is
+        # physically meaningless on an awake or moving pet, so it is never
+        # computed silently on ordinary uploads.
+        respiration = None
+        if context == "sleeping_baseline":
+            if _resp.available:
+                print("\nStep 1c: Sleeping respiratory rate (SRR)...")
+                respiration = _resp.analyze(temp_path, pose_frames)
+            else:
+                print("\nStep 1c: SRR skipped (respiration service unavailable)")
+
         # ── Step 2+3: Gemini two-pass analysis ────────────────────────────
         print("\nStep 2-3/4: Gemini ethological analysis...")
         result = analyze_video(temp_path, use_cache=use_cache, pose_metrics=pose_metrics,
-                               audio_metrics=audio_metrics)
+                               audio_metrics=audio_metrics, respiration=respiration)
 
         if result.get("error"):
             error_type = result.get("error_type", "unknown")
@@ -362,6 +378,7 @@ async def upload_and_analyze(
         result["capture_quality"] = capture_quality.assess(
             "video", pose_metrics, audio_metrics,
             probe_video_meta(temp_path), yolo_available=_yolo.available,
+            respiration=respiration,
         )
         _log_to_history(pet_id, result, "video", file.filename, file_size,
                         owner_id=auth["owner_id"], context=context)
