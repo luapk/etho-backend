@@ -134,6 +134,10 @@ function Landing({ onAnalysisComplete }) {
       console.error('Upload error:', err);
       if (err.code === 'ERR_NETWORK') {
         setError('Cannot connect to server. Make sure the backend is running on port 8001.');
+      } else if (err.response?.status === 401) {
+        setError(API_KEY
+          ? 'The API key was rejected. Check that VITE_API_KEY matches API_KEY on the backend.'
+          : 'This backend requires an API key. Set VITE_API_KEY and redeploy.');
       } else {
         setError(err.response?.data?.detail || err.message || 'Upload failed. Please try again.');
       }

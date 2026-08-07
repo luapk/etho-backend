@@ -91,6 +91,11 @@ _audio = AudioService()
 pet_store.init_db()
 
 
+@app.on_event("startup")
+async def _startup():
+    _log_startup_banner()
+
+
 class PetCreate(BaseModel):
     name: str
     species: Optional[str] = None       # dog | cat
@@ -109,6 +114,71 @@ class PetUpdate(BaseModel):
     birthdate: Optional[str] = None
     weight_kg: Optional[float] = None
     notes: Optional[str] = None
+
+
+def config_status() -> dict:
+    """What is and isn't configured, in plain English.
+
+    Surfaced at startup (Railway logs) and via /health so a misconfigured
+    deployment announces itself instead of failing quietly later.
+    """
+    storage = pet_store.storage_status()
+    checks = []
+
+    if os.environ.get("GEMINI_API_KEY"):
+        checks.append({"item": "Gemini API key", "ok": True,
+                       "detail": "Set — analysis will run."})
+    else:
+        checks.append({"item": "Gemini API key", "ok": False,
+                       "detail": "GEMINI_API_KEY is not set — uploads will fail. "
+                                 "Add it in Railway → Variables."})
+
+    if _API_KEY:
+        checks.append({"item": "API key protection", "ok": True,
+                       "detail": "Set — uploads require the X-API-Key header. "
+                                 "The frontend needs VITE_API_KEY set to the "
+                                 "same value."})
+    else:
+        checks.append({"item": "API key protection", "ok": False,
+                       "detail": "API_KEY is not set — this backend is OPEN to "
+                                 "anyone. Fine for local development, not for "
+                                 "production."})
+
+    checks.append({"item": "Pet record storage", "ok": storage["writable"] and storage["persistent"],
+                   "detail": storage["message"]})
+
+    checks.append({"item": "Pose tracking (YOLO)", "ok": _yolo.available,
+                   "detail": "Ready." if _yolo.available else
+                             "Unavailable — pose measurement and annotated "
+                             "video are skipped; Gemini analysis still works."})
+
+    checks.append({"item": "Audio analysis", "ok": _audio.available,
+                   "detail": "Ready." if _audio.available else
+                             "Unavailable (needs ffmpeg + scipy) — acoustic "
+                             "measurement is skipped; everything else works."})
+
+    problems = [c for c in checks if not c["ok"]]
+    return {
+        "ready_for_production": not problems,
+        "checks": checks,
+        "action_required": [c["detail"] for c in problems],
+    }
+
+
+def _log_startup_banner():
+    """Print configuration status to the deploy log, loudly on problems."""
+    status = config_status()
+    print("\n" + "=" * 62)
+    print(f"  ETHO API {app.version}  |  model: {GEMINI_MODEL}")
+    print("=" * 62)
+    for c in status["checks"]:
+        print(f"  {'OK  ' if c['ok'] else 'WARN'}  {c['item']}: {c['detail']}")
+    if status["ready_for_production"]:
+        print("  → All checks passed.")
+    else:
+        print(f"  → {len(status['action_required'])} item(s) need attention "
+              f"(see /health for the same list).")
+    print("=" * 62 + "\n")
 
 
 def _log_to_history(pet_id, result: dict, media_type: str,
@@ -158,13 +228,16 @@ async def root():
 
 @app.get("/health")
 async def health_check():
+    status = config_status()
     return {
         "status": "healthy",
+        "version": app.version,
+        "model": GEMINI_MODEL,
         "gemini_configured": bool(os.environ.get("GEMINI_API_KEY")),
         "yolo_available": _yolo.available,
         "audio_available": _audio.available,
-        "data_dir": pet_store.DATA_DIR,
-        "version": "17.1.0",
+        "storage": pet_store.storage_status(),
+        "setup": status,
     }
 
 

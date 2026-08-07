@@ -28,9 +28,77 @@ import threading
 import uuid
 from datetime import datetime, timezone
 
-DATA_DIR = os.environ.get("DATA_DIR", "data")
+def _resolve_data_dir() -> str:
+    """Where the longitudinal database lives.
+
+    Order: explicit DATA_DIR wins; otherwise use Railway's mounted volume if
+    one is attached (RAILWAY_VOLUME_MOUNT_PATH is set by the platform); else
+    fall back to ./data, which on a container filesystem is WIPED ON EVERY
+    REDEPLOY. Auto-detecting the volume means mounting one in Railway is
+    sufficient — no matching env var to remember.
+    """
+    explicit = os.environ.get("DATA_DIR")
+    if explicit:
+        return explicit
+    volume = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+    if volume:
+        return volume
+    return "data"
+
+
+DATA_DIR = _resolve_data_dir()
 
 _lock = threading.Lock()
+
+
+def storage_status() -> dict:
+    """Plain-English description of whether records will survive a redeploy.
+    Used by startup logging and /health so misconfiguration is visible
+    rather than discovered when data disappears."""
+    explicit = bool(os.environ.get("DATA_DIR"))
+    volume = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+    on_railway = bool(os.environ.get("RAILWAY_ENVIRONMENT")
+                      or os.environ.get("RAILWAY_PROJECT_ID") or volume)
+
+    if volume and not explicit:
+        source = "railway_volume_autodetected"
+    elif explicit:
+        source = "DATA_DIR"
+    else:
+        source = "default"
+
+    # A path under a mounted volume persists; anything else on Railway does not.
+    persistent = bool(volume) or (explicit and not on_railway)
+
+    writable = False
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        probe = os.path.join(DATA_DIR, ".write_probe")
+        with open(probe, "w") as fh:
+            fh.write("ok")
+        os.unlink(probe)
+        writable = True
+    except OSError:
+        pass
+
+    if not writable:
+        message = f"Cannot write to {DATA_DIR} — pet records cannot be saved."
+    elif persistent:
+        message = f"Records are saved to {DATA_DIR} and survive redeploys."
+    elif on_railway:
+        message = (f"Records are saved to {DATA_DIR}, which is WIPED ON EVERY "
+                   f"REDEPLOY. Mount a volume in Railway to keep pet history.")
+    else:
+        message = f"Records are saved to {DATA_DIR} (local directory)."
+
+    return {
+        "data_dir": DATA_DIR,
+        "source": source,
+        "persistent": persistent,
+        "writable": writable,
+        "on_railway": on_railway,
+        "message": message,
+    }
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS pets (

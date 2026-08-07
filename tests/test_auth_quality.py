@@ -126,6 +126,57 @@ m = svc.summarize_metrics([mk(0, kps_face), mk(1, kps_back), mk(2, kps_face), mk
 check("face_visibility computed from keypoints", m["face_visibility"] == 0.5, m)
 check("GEMINI_MODEL env-configurable default", GEMINI_MODEL == os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"))
 
+# ── Storage detection & config status ──
+import importlib
+
+def _reload_store(env):
+    for k in ("DATA_DIR", "RAILWAY_VOLUME_MOUNT_PATH", "RAILWAY_ENVIRONMENT"):
+        os.environ.pop(k, None)
+    os.environ.update(env)
+    importlib.reload(pet_store)
+    return pet_store.storage_status()
+
+_saved = os.environ.get("DATA_DIR")
+vol = tempfile.mkdtemp()
+s = _reload_store({"RAILWAY_VOLUME_MOUNT_PATH": vol, "RAILWAY_ENVIRONMENT": "production"})
+check("railway volume auto-detected", s["data_dir"] == vol and s["source"] == "railway_volume_autodetected", s)
+check("volume reported persistent", s["persistent"] and s["writable"])
+check("persistent message is plain english", "survive redeploys" in s["message"], s["message"])
+
+s = _reload_store({"RAILWAY_ENVIRONMENT": "production"})
+check("railway without volume flagged ephemeral", not s["persistent"] and s["on_railway"])
+check("ephemeral warning is explicit", "WIPED ON EVERY REDEPLOY" in s["message"], s["message"])
+
+explicit = tempfile.mkdtemp()
+s = _reload_store({"DATA_DIR": explicit, "RAILWAY_VOLUME_MOUNT_PATH": vol})
+check("explicit DATA_DIR wins over volume", s["data_dir"] == explicit and s["source"] == "DATA_DIR")
+
+s = _reload_store({"DATA_DIR": explicit})
+check("local dir counts as persistent", s["persistent"] and not s["on_railway"])
+
+# restore the suite's DB and module state
+_reload_store({"DATA_DIR": _saved} if _saved else {})
+importlib.reload(M)
+
+st = M.config_status()
+check("config_status lists all five checks", len(st["checks"]) == 5, len(st["checks"]))
+check("config_status flags missing gemini key",
+      any("GEMINI_API_KEY is not set" in c["detail"] for c in st["checks"] if not c["ok"]))
+check("config_status flags open backend",
+      any("OPEN to anyone" in c["detail"] for c in st["checks"] if not c["ok"]))
+check("action_required mirrors failed checks",
+      len(st["action_required"]) == len([c for c in st["checks"] if not c["ok"]]))
+check("not production-ready when unconfigured", st["ready_for_production"] is False)
+
+M._API_KEY = "set"
+os.environ["GEMINI_API_KEY"] = "set"
+st2 = M.config_status()
+check("api key protection passes when set",
+      any(c["item"] == "API key protection" and c["ok"] for c in st2["checks"]))
+check("startup banner runs without error", M._log_startup_banner() is None)
+M._API_KEY = ""
+os.environ.pop("GEMINI_API_KEY", None)
+
 # ── Migration idempotence ──
 pet_store.init_db(); pet_store.init_db()
 check("init_db idempotent", True)
