@@ -1,0 +1,396 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Full-bleed gradient background */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+  overflow-x: hidden;
+}
+
+html, body {
+  min-height: 100vh;
+  min-height: 100dvh;
+  width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  font-family: 'Roboto', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: linear-gradient(135deg, #38bdf8 0%, #3b82f6 50%, #06b6d4 100%);
+  background-attachment: fixed;
+}
+
+#root {
+  min-height: 100vh;
+  min-height: 100dvh;
+  width: 100%;
+}
+
+/* Roboto utility class */
+.font-roboto {
+  font-family: 'Roboto', system-ui, -apple-system, sans-serif;
+}
+
+/* Glassmorphism card */
+.glass-card {
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.5);
+}
+
+/* Video styling */
+video::-webkit-media-controls-panel {
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.6));
+}
+
+/* Pet subtitle overlay - color coded */
+.pet-subtitle {
+  position: absolute;
+  bottom: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 24px;
+  border-radius: 8px;
+  font-size: 20px;
+  font-weight: 600;
+  text-align: center;
+  max-width: 90%;
+  pointer-events: none;
+  animation: subtitleFade 0.3s ease-in-out;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.pet-subtitle.zone-green {
+  background: rgba(34, 197, 94, 0.9);
+  color: white;
+}
+
+.pet-subtitle.zone-yellow {
+  background: rgba(245, 158, 11, 0.9);
+  color: white;
+}
+
+.pet-subtitle.zone-red {
+  background: rgba(239, 68, 68, 0.9);
+  color: white;
+}
+
+.pet-subtitle.zone-neutral {
+  background: rgba(255, 255, 255, 0.95);
+  color: #1a1a1a;
+}
+
+@keyframes subtitleFade {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* Toggle switch - light blue when active */
+.toggle-switch {
+  position: relative;
+  width: 52px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 14px;
+  cursor: pointer;
+  transition: background 0.3s;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.toggle-switch.active {
+  background: rgba(56, 189, 248, 0.8);
+  border-color: rgba(56, 189, 248, 1);
+}
+
+.toggle-switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.3s;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+.toggle-switch.active::after {
+  transform: translateX(24px);
+}
+
+/* Animation utilities */
+@keyframes pulse-slow {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 3s ease-in-out infinite;
+}
+
+/* Focus styles for accessibility */
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.5);
+  outline-offset: 2px;
+}
+
+/* Selection */
+::selection {
+  background: rgba(59, 130, 246, 0.5);
+  color: white;
+}
+
+/* Audio waveform - Traktor style */
+.waveform-bar {
+  transition: height 0.1s ease-out;
+}
+
+.waveform-bar.active {
+  opacity: 1;
+}
+
+.waveform-bar.inactive {
+  opacity: 0.3;
+}
+
+/* ========================================
+   MOBILE OPTIMIZATIONS
+   ======================================== */
+
+/* Touch-friendly tap targets */
+@media (max-width: 768px) {
+  /* Ensure minimum tap target size */
+  button, 
+  .toggle-switch,
+  [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  /* Larger touch targets for waveform */
+  .waveform-bar {
+    min-width: 4px;
+  }
+  
+  /* Stack assessment panel on mobile */
+  .assessment-panel {
+    flex-direction: column !important;
+  }
+  
+  /* Center score on mobile */
+  .score-container {
+    align-items: center !important;
+    margin-bottom: 1rem;
+  }
+  
+  /* Reduce padding on mobile */
+  .glass-card {
+    padding: 1rem;
+  }
+  
+  /* Smaller text on mobile */
+  .mobile-text-sm {
+    font-size: 0.875rem;
+  }
+  
+  /* Full width buttons */
+  .mobile-full-width {
+    width: 100%;
+  }
+  
+  /* Reduce chart height on mobile */
+  .chart-container {
+    height: 160px !important;
+  }
+  
+  /* Wrap behavioral markers better */
+  .markers-container {
+    gap: 0.5rem;
+  }
+  
+  .markers-container span {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.75rem;
+  }
+  
+  /* Smaller subtitle on mobile */
+  .pet-subtitle {
+    font-size: 14px;
+    padding: 6px 16px;
+    bottom: 50px;
+  }
+  
+  /* Adjust video player controls spacing */
+  video {
+    max-height: 300px !important;
+  }
+  
+  /* Biometrics vital cards - 2 column on mobile */
+  .vitals-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+  
+  /* Navigation menu - full height on mobile */
+  .nav-menu {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+}
+
+/* Small phones */
+@media (max-width: 375px) {
+  body {
+    font-size: 14px;
+  }
+  
+  .glass-card {
+    border-radius: 1rem;
+    padding: 0.875rem;
+  }
+  
+  h1 {
+    font-size: 1.5rem;
+  }
+  
+  h2 {
+    font-size: 1.125rem;
+  }
+  
+  /* Single column vital cards on very small screens */
+  .vitals-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* Landscape phone */
+@media (max-width: 896px) and (orientation: landscape) {
+  .hero-section {
+    min-height: auto;
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+  }
+  
+  video {
+    max-height: 200px !important;
+  }
+}
+
+/* Safe area insets for notched phones */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .bottom-nav,
+  .fixed-bottom {
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+  
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+
+/* Prevent zoom on input focus (iOS) */
+@media (max-width: 768px) {
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Smooth momentum scrolling on iOS */
+.scroll-container {
+  -webkit-overflow-scrolling: touch;
+  overflow-y: auto;
+}
+
+/* Prevent text selection on buttons for cleaner mobile UX */
+button {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Reduce motion for users who prefer it */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Dark mode support (for system dark mode) */
+@media (prefers-color-scheme: dark) {
+  /* Already dark - no changes needed */
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .glass-card {
+    border-width: 2px;
+    border-color: white;
+  }
+  
+  button {
+    border-width: 2px;
+  }
+}
+
+/* Print styles for PDF generation */
+@media print {
+  body {
+    background: white !important;
+  }
+  
+  .glass-card {
+    background: white !important;
+    border: 1px solid #ccc !important;
+    box-shadow: none !important;
+  }
+  
+  .no-print {
+    display: none !important;
+  }
+}

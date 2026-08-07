@@ -2,6 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Monorepo layout
+
+This repo holds both halves of Etho:
+- **Backend** (repo root): FastAPI app in `app/`, deployed to Railway via Nixpacks. Nixpacks detects Python from the root `requirements.txt`; the `frontend/` subdirectory does not affect it.
+- **Frontend** (`frontend/`): Vite + React + Tailwind SPA, deployed to Vercel. In the Vercel project settings set **Root Directory = `frontend`** (its `vercel.json` handles build/output/rewrites). Imported from the former `luapk/etho-frontend` repo (its git history stays there; the v16 `feat/annotated-video-pose-metrics` branch was never pushed to GitHub — the imported code is v15 `main`).
+
+```bash
+# Frontend dev
+cd frontend && npm install && npm run dev    # Vite dev server
+npm run build                                # production build to frontend/dist
+```
+
+Frontend env vars (Vercel): `VITE_API_URL` (Railway backend URL), `VITE_API_KEY` (backend key), `VITE_APP_PASSWORD` (cosmetic gate).
+
 ## Commands
 
 ```bash
