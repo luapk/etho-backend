@@ -265,13 +265,30 @@ def analyze_video_with_context(video_file, scene_context: dict, pose_metrics: di
         pose_section += "These are objectively measured from video frames — cite them when making posture claims.\n\n"
         cov = pose_metrics.get("detection_coverage", 0)
         pose_section += f"PET DETECTION COVERAGE: {cov:.0%} of sampled frames\n"
+        # Only measurements that passed their reliability gates are presented
+        # as ground truth. A pose model trained on humans can emit confident
+        # nonsense on a quadruped, and stating it here would have Gemini cite
+        # a fabricated posture as fact.
         if "spinal_curvature" in pose_metrics:
             sc = pose_metrics["spinal_curvature"]
-            pose_section += (f"SPINAL CURVATURE: mean {sc['mean_deg']}°, "
-                             f"peak {sc['max_deg']}° — {sc['interpretation']}\n")
+            if sc.get("reliable", True):
+                pose_section += (f"SPINAL CURVATURE: mean {sc['mean_deg']}°, "
+                                 f"peak {sc['max_deg']}° — "
+                                 f"{sc.get('interpretation', '')}\n")
+            else:
+                pose_section += (
+                    "SPINAL CURVATURE: NOT RELIABLY MEASURABLE on this clip "
+                    f"({sc.get('unreliable_reason', 'failed validity checks')}). "
+                    "Do NOT cite any spinal angle. Assess posture visually and "
+                    "say so plainly.\n")
         if "head_tilt" in pose_metrics:
             ht = pose_metrics["head_tilt"]
-            pose_section += f"HEAD TILT: mean {ht['mean_deg']}°, max {ht['max_abs_deg']}°\n"
+            if ht.get("reliable", True):
+                pose_section += (f"HEAD TILT: mean {ht['mean_deg']}°, "
+                                 f"max {ht['max_abs_deg']}°\n")
+            else:
+                pose_section += ("HEAD TILT: not reliably measurable on this "
+                                 "clip — do not cite a tilt angle.\n")
         if "face_visibility" in pose_metrics:
             fv = pose_metrics["face_visibility"]
             pose_section += f"FACE VISIBILITY: {fv:.0%} of pet-visible frames\n"

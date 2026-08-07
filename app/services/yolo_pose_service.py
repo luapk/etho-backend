@@ -80,6 +80,31 @@ def _compute_iou(box1: tuple, box2: np.ndarray) -> float:
     return inter / (a1 + a2 - inter)
 
 
+# Reliability gates for pose-derived angles.
+#
+# The pose model is HUMAN-trained (COCO-17). On a quadruped it places
+# "shoulders" and "hips" wherever they best fit a human prior, which on some
+# animals produces confident-looking nonsense. Measured on a clip of a calm
+# pug sitting still: mean spinal curvature 75 deg, peak 165 deg, per-second
+# values swinging 79 -> 118 -> 12 -> 69 -> 131, and a head tilt of -175 deg
+# (upside down). Those numbers were being injected into Gemini as ground
+# truth alongside the interpretation "extreme fear crouch, pain, or
+# submission" — actively pushing the analysis toward a false positive.
+#
+# So the metric must prove itself before it is reported:
+#   stability   a real posture does not swing tens of degrees per second;
+#               high variance means keypoint noise, not movement
+#   plausibility the interpretation scale tops out at 30 deg; a mean far
+#               beyond it is not a posture this scale can describe
+# Failing either, the raw numbers are still returned (for debugging) but
+# flagged unreliable, and no interpretation is produced or sent to Gemini.
+# The real fix is an animal-trained pose model (AP-10K / SuperAnimal) —
+# see scripts/compare_pose_models.py.
+SPINE_STABILITY_MAX_SD = 20.0
+SPINE_PLAUSIBLE_MAX_DEG = 45.0
+HEAD_TILT_PLAUSIBLE_MAX_DEG = 90.0
+
+
 def _interpret_spinal_angle(deg: float) -> str:
     if deg < 5:
         return "Normal relaxed posture"
@@ -286,11 +311,31 @@ class YoloPoseService:
 
         if spinal_vals:
             mean_s = float(np.mean(spinal_vals))
-            summary["spinal_curvature"] = {
+            sd_s = float(np.std(spinal_vals)) if len(spinal_vals) > 1 else 0.0
+            reasons = []
+            if sd_s > SPINE_STABILITY_MAX_SD:
+                reasons.append(f"unstable across frames (SD {sd_s:.0f} deg > "
+                               f"{SPINE_STABILITY_MAX_SD:.0f}) — keypoint noise, "
+                               f"not posture change")
+            if mean_s > SPINE_PLAUSIBLE_MAX_DEG:
+                reasons.append(f"implausible magnitude ({mean_s:.0f} deg; the "
+                               f"interpretation scale ends at 30 deg)")
+            reliable = not reasons
+
+            sc = {
                 "mean_deg": round(mean_s, 1),
                 "max_deg": round(float(np.max(spinal_vals)), 1),
-                "interpretation": _interpret_spinal_angle(mean_s),
+                "sd_deg": round(sd_s, 1),
+                "reliable": reliable,
             }
+            if reliable:
+                sc["interpretation"] = _interpret_spinal_angle(mean_s)
+            else:
+                sc["unreliable_reason"] = "; ".join(reasons)
+                sc["note"] = ("Human-pose keypoints (COCO-17) on an animal. "
+                              "Not reported as a finding — assess posture "
+                              "visually.")
+            summary["spinal_curvature"] = sc
             # Per-second median series: the measured track a frontend can plot
             # on the same time axis as the AI distress curve and audio events,
             # so posture claims are visually corroborated. Median per bucket
@@ -301,9 +346,18 @@ class YoloPoseService:
             ][:300]
 
         if tilt_vals:
+            mean_t = float(np.mean(tilt_vals))
+            # |tilt| near 180 deg means the ear-line was read upside down —
+            # a keypoint-assignment failure, not a head position.
+            tilt_reliable = abs(mean_t) <= HEAD_TILT_PLAUSIBLE_MAX_DEG
             summary["head_tilt"] = {
-                "mean_deg": round(float(np.mean(tilt_vals)), 1),
+                "mean_deg": round(mean_t, 1),
                 "max_abs_deg": round(float(np.max(np.abs(tilt_vals))), 1),
+                "reliable": tilt_reliable,
             }
+            if not tilt_reliable:
+                summary["head_tilt"]["unreliable_reason"] = (
+                    f"implausible tilt ({mean_t:.0f} deg) — ear keypoints "
+                    f"likely mis-assigned by the human-pose model")
 
         return summary

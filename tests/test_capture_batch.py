@@ -137,5 +137,39 @@ check("detector overridable via YOLO_MODEL", "YOLO_MODEL" in open(
 check("pose stays nano (bigger human-pose model does not help animals)",
       yps.POSE_MODEL == "yolo11n-pose.pt")
 
+# ── Pose reliability gates (human keypoints on animals emit nonsense) ──
+from app.services.yolo_pose_service import (SPINE_STABILITY_MAX_SD,
+                                            SPINE_PLAUSIBLE_MAX_DEG)
+svc2 = yps.YoloPoseService.__new__(yps.YoloPoseService)
+def mkframes(angles, tilt=5.0):
+    out = []
+    for i, a in enumerate(angles):
+        out.append(yps.PoseFrame(i, float(i), [yps.AnimalPose(
+            bbox=(0, 0, 10, 10), confidence=0.9, class_id=16, class_name="dog",
+            keypoints=None, spinal_angle=a, head_tilt=tilt)]))
+    return out
+
+# Real pug clip values: wildly unstable and implausibly large
+bad = svc2.summarize_metrics(mkframes([78.8, 117.9, 11.8, 68.5, 131.2]))["spinal_curvature"]
+check("unstable spine flagged unreliable", bad["reliable"] is False, bad)
+check("no interpretation when unreliable", "interpretation" not in bad)
+check("unreliable reason explains why",
+      "unstable" in bad["unreliable_reason"] or "implausible" in bad["unreliable_reason"])
+
+good = svc2.summarize_metrics(mkframes([12.0, 14.0, 11.0, 13.5, 12.5]))["spinal_curvature"]
+check("stable plausible spine stays reliable", good["reliable"] is True, good)
+check("interpretation present when reliable", "interpretation" in good)
+
+tilt_bad = svc2.summarize_metrics(mkframes([12.0, 13.0, 12.5], tilt=-174.7))["head_tilt"]
+check("upside-down head tilt flagged", tilt_bad["reliable"] is False, tilt_bad)
+
+# Unreliable values must not reach Gemini as ground truth
+import sys as _s
+_s.modules.setdefault("google", types.ModuleType("google"))
+from app.services.gemini_service import analyze_video_with_context as _avc
+import inspect
+src = inspect.getsource(_avc)
+check("Pass 2 gates on reliability", "NOT RELIABLY MEASURABLE" in src)
+
 print(f"\n{'='*40}\n{ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)
