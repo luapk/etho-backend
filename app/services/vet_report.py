@@ -230,7 +230,10 @@ def render_markdown(report: dict) -> str:
         instrument = (f"{h['instrument_total']}/{int(h['instrument_max'])}"
                       if h.get("instrument_total") is not None
                       and h.get("instrument_max") else "—")
-        add(f"| {h['created_at']} | {_fmt(h['media_type'])} "
+        media = h.get("media_type") or "—"
+        if h.get("context"):
+            media = f"{media} ({h['context']})"
+        add(f"| {h['created_at']} | {media} "
             f"| {_fmt(h['distress_score'])} | {_fmt(h['zone'])} "
             f"| {instrument} | {_fmt(h['spinal_mean_deg'], '°')} "
             f"| {_fmt(h['vocal_event_count'])} | {_fmt(h['pitch_mean_hz'], ' Hz')} "

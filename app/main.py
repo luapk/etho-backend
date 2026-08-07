@@ -18,28 +18,59 @@ import io
 from .services.gemini_service import analyze_video
 from .services.yolo_pose_service import YoloPoseService
 from .services.audio_service import AudioService
-from .services import pet_store, vet_report
+from .services import pet_store, vet_report, capture_quality
 from .services.video_annotator import (
     annotate_video,
     annotate_image,
     get_annotated_video_path,
     cleanup_old_videos,
+    probe_video_meta,
+    probe_image_meta,
 )
 
 _API_KEY = os.environ.get("API_KEY", "")
 
 
-async def require_api_key(x_api_key: str = Header(default="", alias="X-API-Key")):
-    """Reject requests that don't carry the correct API key.
-    If API_KEY env var is not set the check is skipped (local dev convenience)."""
-    if _API_KEY and x_api_key != _API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+async def get_auth(x_api_key: str = Header(default="", alias="X-API-Key")) -> dict:
+    """Resolve the X-API-Key header to an auth context.
+
+    Three roles:
+      admin — the master API_KEY env var (or local dev with API_KEY unset):
+              sees all pets, can create owners
+      owner — a per-guardian key minted via POST /api/owners: sees only
+              their own pets and records
+    Anything else with API_KEY set → 401.
+
+    Cross-owner lookups return 404 (not 403) at the endpoint level so the
+    existence of other guardians' pets is never confirmed.
+    """
+    if _API_KEY and x_api_key == _API_KEY:
+        return {"role": "admin", "owner_id": None}
+    if x_api_key:
+        owner = pet_store.get_owner_by_key(x_api_key)
+        if owner:
+            return {"role": "owner", "owner_id": owner["id"], "owner": owner}
+    if not _API_KEY:
+        # Local dev convenience: no master key configured → open, admin-like
+        return {"role": "admin", "owner_id": None}
+    raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+def _authorized_pet(pet_id: str, auth: dict) -> dict:
+    """Fetch a pet the caller is allowed to see, else 404. Owners only see
+    their own; admin sees all."""
+    pet = pet_store.get_pet(pet_id)
+    if not pet:
+        raise HTTPException(status_code=404, detail="Pet not found")
+    if auth["role"] == "owner" and pet.get("owner_id") != auth["owner_id"]:
+        raise HTTPException(status_code=404, detail="Pet not found")
+    return pet
 
 
 app = FastAPI(
     title="Etho API",
     description="AI-powered pet behaviour analysis — YOLO11-Pose + Gemini",
-    version="16.0.0",
+    version="17.1.0",
 )
 
 app.add_middleware(
@@ -79,17 +110,17 @@ class PetUpdate(BaseModel):
 
 
 def _log_to_history(pet_id, result: dict, media_type: str,
-                    filename: str, size_bytes: int):
+                    filename: str, size_bytes: int,
+                    owner_id: str = None, context: str = None):
     """Persist a successful analysis to the pet's longitudinal record.
-    pet_id may be None — the record is stored unassigned and can be linked
-    later. Never lets a logging failure break the analysis response."""
+    pet_id may be None — the record is stored unassigned (but still
+    owner-scoped). Pet ownership is validated by the endpoint BEFORE the
+    pipeline runs. Never lets a logging failure break the response."""
     try:
-        if pet_id and not pet_store.get_pet(pet_id):
-            print(f"  ⚠ Unknown pet_id {pet_id} — storing analysis unassigned")
-            pet_id = None
         analysis_id = pet_store.log_analysis(
             pet_id, result, media_type=media_type,
             source_filename=filename, file_size_bytes=size_bytes,
+            owner_id=owner_id, context=context,
         )
         result["analysis_id"] = analysis_id
         result["pet_id"] = pet_id
@@ -103,7 +134,7 @@ async def root():
     return {
         "status": "healthy",
         "service": "Etho API",
-        "version": "17.0.0",
+        "version": "17.1.0",
         "engine": "gemini-2.0-flash + yolo11-pose",
         "pose_tracking": _yolo.available,
         "audio_analysis": _audio.available,
@@ -131,17 +162,19 @@ async def health_check():
         "yolo_available": _yolo.available,
         "audio_available": _audio.available,
         "data_dir": pet_store.DATA_DIR,
-        "version": "17.0.0",
+        "version": "17.1.0",
     }
 
 
-@app.post("/api/video/upload", dependencies=[Depends(require_api_key)])
+@app.post("/api/video/upload")
 async def upload_and_analyze(
     file: UploadFile = File(...),
     mode: str = Query(default="full", description="Analysis mode: full or quick"),
     use_cache: bool = Query(default=True, description="Use cached results if available"),
     annotate: bool = Query(default=True, description="Generate annotated video overlay"),
     pet_id: Optional[str] = Query(default=None, description="Pet profile to log this analysis to"),
+    context: Optional[str] = Query(default=None, description="Capture context tag: weekly_baseline | incident | post_vet | other"),
+    auth: dict = Depends(get_auth),
 ):
     """
     Upload a video and receive comprehensive ethological analysis plus an
@@ -155,6 +188,11 @@ async def upload_and_analyze(
        timeline events, pet-POV text, and distress meter onto every frame
     5. Returns JSON analysis + annotated_video_id for download
     """
+    # Validate pet ownership BEFORE the expensive pipeline runs — an invalid
+    # pet_id should fail in milliseconds, not after a full Gemini analysis.
+    if pet_id:
+        _authorized_pet(pet_id, auth)
+
     # Lazy cleanup of old annotated videos
     cleanup_old_videos(max_age_secs=7200)
 
@@ -239,8 +277,13 @@ async def upload_and_analyze(
             else:
                 print("  ⚠ Annotation failed (video still returned)")
 
-        # ── Step 5: Log to longitudinal record ────────────────────────────
-        _log_to_history(pet_id, result, "video", file.filename, file_size)
+        # ── Step 5: Capture-quality feedback + longitudinal log ──────────
+        result["capture_quality"] = capture_quality.assess(
+            "video", pose_metrics, audio_metrics,
+            probe_video_meta(temp_path), yolo_available=_yolo.available,
+        )
+        _log_to_history(pet_id, result, "video", file.filename, file_size,
+                        owner_id=auth["owner_id"], context=context)
 
         return {"success": True, "data": result}
 
@@ -260,11 +303,13 @@ async def upload_and_analyze(
                 pass
 
 
-@app.post("/api/image/upload", dependencies=[Depends(require_api_key)])
+@app.post("/api/image/upload")
 async def upload_and_analyze_image(
     file: UploadFile = File(...),
     annotate: bool = Query(default=True, description="Generate annotated image overlay"),
     pet_id: Optional[str] = Query(default=None, description="Pet profile to log this analysis to"),
+    context: Optional[str] = Query(default=None, description="Capture context tag: weekly_baseline | incident | post_vet | other"),
+    auth: dict = Depends(get_auth),
 ):
     """
     Upload a still image for single-moment ethological analysis.
@@ -272,6 +317,9 @@ async def upload_and_analyze_image(
     single-entry timeline, FGS scored from the still). Logged to the pet's
     longitudinal record like video analyses.
     """
+    if pet_id:
+        _authorized_pet(pet_id, auth)
+
     cleanup_old_videos(max_age_secs=7200)
 
     allowed_types = {"image/jpeg", "image/png", "image/webp"}
@@ -315,7 +363,12 @@ async def upload_and_analyze_image(
             if media_id:
                 result["annotated_video_id"] = media_id
 
-        _log_to_history(pet_id, result, "image", file.filename, file_size)
+        result["capture_quality"] = capture_quality.assess(
+            "image", pose_metrics, None,
+            probe_image_meta(temp_path), yolo_available=_yolo.available,
+        )
+        _log_to_history(pet_id, result, "image", file.filename, file_size,
+                        owner_id=auth["owner_id"], context=context)
 
         return {"success": True, "data": result}
 
@@ -334,67 +387,103 @@ async def upload_and_analyze_image(
                 pass
 
 
+# ── Owners (per-guardian API keys) ───────────────────────────────────────────
+
+class OwnerCreate(BaseModel):
+    name: str
+    email: Optional[str] = None
+
+
+@app.post("/api/owners")
+async def create_owner(owner: OwnerCreate, auth: dict = Depends(get_auth)):
+    """Create a guardian account and mint their personal API key (admin only).
+    The raw key is returned ONCE and never stored — only its SHA-256 hash."""
+    if auth["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin key required")
+    created, raw_key = pet_store.create_owner(owner.name, owner.email)
+    return {"success": True, "owner": created, "api_key": raw_key,
+            "note": "Store this key now — it cannot be retrieved again."}
+
+
+@app.get("/api/owners")
+async def get_owners(auth: dict = Depends(get_auth)):
+    """Owner roster with pet counts (admin only). Keys are never exposed."""
+    if auth["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin key required")
+    return {"success": True, "owners": pet_store.list_owners()}
+
+
+# ── Capture protocol ─────────────────────────────────────────────────────────
+
+@app.get("/api/capture-protocol")
+async def get_capture_protocol():
+    """Versioned capture guidance for the frontend: weekly-baseline rules,
+    incident-capture rules, photo framing, and the available context tags.
+    Public — contains no user data."""
+    return {"success": True, "protocol": capture_quality.CAPTURE_PROTOCOL}
+
+
 # ── Pet profiles & longitudinal record ───────────────────────────────────────
 
-@app.post("/api/pets", dependencies=[Depends(require_api_key)])
-async def create_pet(pet: PetCreate):
-    """Create a pet profile. Analyses uploaded with ?pet_id=<id> accumulate
-    into this pet's longitudinal record."""
-    return {"success": True, "pet": pet_store.create_pet(pet.model_dump())}
+@app.post("/api/pets")
+async def create_pet(pet: PetCreate, auth: dict = Depends(get_auth)):
+    """Create a pet profile, owned by the calling guardian. Analyses uploaded
+    with ?pet_id=<id> accumulate into this pet's longitudinal record."""
+    created = pet_store.create_pet(pet.model_dump(), owner_id=auth["owner_id"])
+    return {"success": True, "pet": created}
 
 
-@app.get("/api/pets", dependencies=[Depends(require_api_key)])
-async def get_pets():
-    return {"success": True, "pets": pet_store.list_pets()}
+@app.get("/api/pets")
+async def get_pets(auth: dict = Depends(get_auth)):
+    """Owner keys see only their own pets; the admin key sees all."""
+    return {"success": True, "pets": pet_store.list_pets(owner_id=auth["owner_id"])}
 
 
-@app.get("/api/pets/{pet_id}", dependencies=[Depends(require_api_key)])
-async def get_pet(pet_id: str):
-    pet = pet_store.get_pet(pet_id)
-    if not pet:
-        raise HTTPException(status_code=404, detail="Pet not found")
-    return {"success": True, "pet": pet}
+@app.get("/api/pets/{pet_id}")
+async def get_pet(pet_id: str, auth: dict = Depends(get_auth)):
+    return {"success": True, "pet": _authorized_pet(pet_id, auth)}
 
 
-@app.patch("/api/pets/{pet_id}", dependencies=[Depends(require_api_key)])
-async def update_pet(pet_id: str, patch: PetUpdate):
-    if not pet_store.get_pet(pet_id):
-        raise HTTPException(status_code=404, detail="Pet not found")
+@app.patch("/api/pets/{pet_id}")
+async def update_pet(pet_id: str, patch: PetUpdate, auth: dict = Depends(get_auth)):
+    _authorized_pet(pet_id, auth)
     data = {k: v for k, v in patch.model_dump().items() if v is not None}
     return {"success": True, "pet": pet_store.update_pet(pet_id, data)}
 
 
-@app.get("/api/pets/{pet_id}/history", dependencies=[Depends(require_api_key)])
-async def get_pet_history(pet_id: str, limit: int = Query(default=200, le=500)):
+@app.get("/api/pets/{pet_id}/history")
+async def get_pet_history(pet_id: str, limit: int = Query(default=200, le=500),
+                          auth: dict = Depends(get_auth)):
     """Chronological indexed metrics for timeline/chart rendering."""
-    if not pet_store.get_pet(pet_id):
-        raise HTTPException(status_code=404, detail="Pet not found")
+    _authorized_pet(pet_id, auth)
     return {"success": True, "history": pet_store.get_history(pet_id, limit=limit)}
 
 
-@app.get("/api/pets/{pet_id}/trends", dependencies=[Depends(require_api_key)])
-async def get_pet_trends(pet_id: str):
+@app.get("/api/pets/{pet_id}/trends")
+async def get_pet_trends(pet_id: str, auth: dict = Depends(get_auth)):
     """Baseline, deviation, slope, and red flags — transparent math, each pet
     compared only against its own history."""
-    if not pet_store.get_pet(pet_id):
-        raise HTTPException(status_code=404, detail="Pet not found")
+    _authorized_pet(pet_id, auth)
     return {"success": True, "trends": pet_store.compute_trends(pet_id)}
 
 
-@app.get("/api/analyses/{analysis_id}", dependencies=[Depends(require_api_key)])
-async def get_analysis(analysis_id: str):
+@app.get("/api/analyses/{analysis_id}")
+async def get_analysis(analysis_id: str, auth: dict = Depends(get_auth)):
     """Full stored record (complete raw result JSON) for one analysis."""
     rec = pet_store.get_analysis(analysis_id)
     if not rec:
         raise HTTPException(status_code=404, detail="Analysis not found")
+    if auth["role"] == "owner" and rec.get("owner_id") != auth["owner_id"]:
+        raise HTTPException(status_code=404, detail="Analysis not found")
     return {"success": True, "analysis": rec}
 
 
-@app.get("/api/pets/{pet_id}/vet-report", dependencies=[Depends(require_api_key)])
+@app.get("/api/pets/{pet_id}/vet-report")
 async def get_vet_report(
     pet_id: str,
     reason: Optional[str] = Query(default=None, description="Guardian-stated reason for visit"),
     format: str = Query(default="json", description="json or markdown"),
+    auth: dict = Depends(get_auth),
 ):
     """
     Pre-consultation report: signalment, observation log (measured vs
@@ -402,6 +491,7 @@ async def get_vet_report(
     math, recurring markers, methodology & limitations, disclaimer.
     Observations only — never diagnoses.
     """
+    _authorized_pet(pet_id, auth)
     report = vet_report.build_report(pet_id, reason_for_visit=reason)
     if not report:
         raise HTTPException(status_code=404, detail="Pet not found")
@@ -461,7 +551,7 @@ async def list_models():
     }
 
 
-@app.get("/api/research/bundle", dependencies=[Depends(require_api_key)])
+@app.get("/api/research/bundle", dependencies=[Depends(get_auth)])
 async def download_research_bundle():
     """
     Download a ZIP archive of the complete Etho research pack:

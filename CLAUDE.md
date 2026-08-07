@@ -53,6 +53,18 @@ GET   /api/pets/{id}/vet-report?format=markdown|json&reason=...   pre-consultati
 
 Storage is SQLite (stdlib, no new deps) at `$DATA_DIR/etho.db` (`pet_store.py`, default `./data`). **On Railway, mount a volume and set `DATA_DIR` to it — otherwise records are lost on redeploy.** Every analysis row stores the complete raw result JSON plus indexed metric columns, stamped with `pipeline_version` / `prompt_version` / `model_used` (bump `PROMPT_VERSION` in `ethological_prompt.py` when the prompt changes).
 
+### Auth model (v17.1)
+
+Two key tiers resolved by `get_auth` in `main.py`:
+- **Admin** — the `API_KEY` env var. Sees all pets, creates owners (`POST /api/owners`, admin-only). With `API_KEY` unset, everything is open admin-like (local dev only — always set it in production).
+- **Owner** — per-guardian keys minted by `POST /api/owners` (returned once, prefixed `etho_`; only the SHA-256 hash is stored). Owners see only their own pets/analyses; pets created with an owner key are owned by that owner and uploads log with `owner_id`.
+
+Rules: cross-owner access returns **404, never 403** (don't confirm other guardians' pets exist); pet ownership is validated **before** the pipeline runs so a bad `pet_id` fails fast instead of after a full Gemini analysis.
+
+### Capture protocol & quality feedback (v17.1)
+
+`capture_quality.py` holds the versioned capture protocol (`GET /api/capture-protocol`, public) and `assess()`, which attaches a `capture_quality` block to every analysis: framing (YOLO detection coverage), duration, audio presence, brightness, and resolution — each check reporting measured value + threshold + advice. Grades: good/fair/poor. **Quality is feedback, never a gate** — a poor incident clip is still analysed. Uploads accept `?context=weekly_baseline|incident|post_vet|other`, stored per record and shown in the vet report's observation log. Media probes live in `video_annotator.py` (`probe_video_meta`/`probe_image_meta`) and return `{}` on any failure.
+
 Scientific-validity rules encoded in this layer:
 - **Measured vs AI-estimated are never mixed** — YOLO/DSP columns are labelled measured; distress/instrument scores are labelled AI-estimated, in both the DB layout and the vet report.
 - **Instrument scoring** (`instrument_scores` in the schema): cats get the Feline Grimace Scale (validated on stills, 5 items 0–2, ≥4/10 published threshold *reported, not interpreted*); dogs get an explicitly-labelled non-validated observable subset of Glasgow CMPS-SF. `validate_and_enrich_response()` clamps item scores, nulls invisible items, and recomputes totals — never trusts the model's self-reported total.

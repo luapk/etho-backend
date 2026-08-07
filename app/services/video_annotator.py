@@ -272,6 +272,49 @@ def annotate_video(video_path: str, pose_frames: list, analysis: dict) -> Option
     return video_id
 
 
+def probe_video_meta(video_path: str) -> dict:
+    """Cheap technical probe for capture-quality checks: duration, resolution,
+    and mid-clip brightness (mean grey 0-255). Returns {} on any failure —
+    quality feedback is best-effort and must never break an analysis."""
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return {}
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        meta = {
+            "duration_sec": round(total / fps, 1) if fps else None,
+            "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+            "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        }
+        # Sample the middle frame for brightness
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, total // 2))
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            meta["brightness"] = round(float(np.mean(grey)), 1)
+        cap.release()
+        return meta
+    except Exception:
+        return {}
+
+
+def probe_image_meta(image_path: str) -> dict:
+    """Technical probe for a still image. Returns {} on failure."""
+    try:
+        frame = cv2.imread(image_path)
+        if frame is None:
+            return {}
+        grey = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        return {
+            "width": frame.shape[1],
+            "height": frame.shape[0],
+            "brightness": round(float(np.mean(grey)), 1),
+        }
+    except Exception:
+        return {}
+
+
 def annotate_image(image_path: str, pose_frames: list, analysis: dict) -> Optional[str]:
     """
     Render an annotated still (bbox, skeleton, distress meter, POV line) and

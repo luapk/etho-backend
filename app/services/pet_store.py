@@ -19,8 +19,10 @@ filesystem is ephemeral across deploys — mount a volume (e.g. at /data) and
 set DATA_DIR=/data for real persistence.
 """
 
+import hashlib
 import json
 import os
+import secrets
 import sqlite3
 import threading
 import uuid
@@ -86,7 +88,29 @@ CREATE TABLE IF NOT EXISTS analyses (
 
 CREATE INDEX IF NOT EXISTS idx_analyses_pet_time
     ON analyses (pet_id, created_at);
+
+CREATE TABLE IF NOT EXISTS owners (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    email        TEXT,
+    api_key_hash TEXT NOT NULL UNIQUE,   -- SHA-256 of the raw key; raw is never stored
+    created_at   TEXT NOT NULL
+);
 """
+
+# Columns added after the original v17 schema — applied idempotently on
+# startup so existing databases migrate in place.
+_MIGRATIONS = [
+    ("pets", "owner_id", "TEXT"),
+    ("analyses", "owner_id", "TEXT"),
+    ("analyses", "context", "TEXT"),   # capture context tag, e.g. weekly_baseline
+]
+
+
+def _ensure_column(conn, table: str, col: str, decl: str):
+    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+    if col not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
 
 def _utcnow() -> str:
@@ -103,6 +127,53 @@ def _connect() -> sqlite3.Connection:
 def init_db():
     with _lock, _connect() as conn:
         conn.executescript(_SCHEMA)
+        for table, col, decl in _MIGRATIONS:
+            _ensure_column(conn, table, col, decl)
+
+
+# ── Owners (per-guardian API keys) ───────────────────────────────────────────
+
+def _hash_key(raw_key: str) -> str:
+    return hashlib.sha256(raw_key.encode()).hexdigest()
+
+
+def create_owner(name: str, email: str = None) -> tuple:
+    """Create an owner and mint their API key. Returns (owner, raw_key).
+    The raw key is returned exactly once — only its hash is stored."""
+    raw_key = "etho_" + secrets.token_urlsafe(32)
+    owner_id = str(uuid.uuid4())
+    now = _utcnow()
+    with _lock, _connect() as conn:
+        conn.execute(
+            "INSERT INTO owners (id, name, email, api_key_hash, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (owner_id, name, email, _hash_key(raw_key), now),
+        )
+    owner = {"id": owner_id, "name": name, "email": email, "created_at": now}
+    return owner, raw_key
+
+
+def get_owner_by_key(raw_key: str):
+    """Resolve a raw API key to its owner (constant work: one hash + lookup)."""
+    if not raw_key:
+        return None
+    with _lock, _connect() as conn:
+        row = conn.execute(
+            "SELECT id, name, email, created_at FROM owners WHERE api_key_hash = ?",
+            (_hash_key(raw_key),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_owners() -> list:
+    """Owner roster with pet counts. Never exposes key hashes."""
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT o.id, o.name, o.email, o.created_at, COUNT(p.id) AS pet_count "
+            "FROM owners o LEFT JOIN pets p ON p.owner_id = o.id "
+            "GROUP BY o.id ORDER BY o.created_at"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ── Pets ─────────────────────────────────────────────────────────────────────
@@ -110,16 +181,16 @@ def init_db():
 _PET_FIELDS = ("name", "species", "breed", "sex", "birthdate", "weight_kg", "notes")
 
 
-def create_pet(data: dict) -> dict:
+def create_pet(data: dict, owner_id: str = None) -> dict:
     pet_id = str(uuid.uuid4())
     now = _utcnow()
     with _lock, _connect() as conn:
         conn.execute(
             "INSERT INTO pets (id, name, species, breed, sex, birthdate, weight_kg, "
-            "notes, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "notes, created_at, updated_at, owner_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (pet_id, data.get("name", "Unnamed"), data.get("species"),
              data.get("breed"), data.get("sex"), data.get("birthdate"),
-             data.get("weight_kg"), data.get("notes"), now, now),
+             data.get("weight_kg"), data.get("notes"), now, now, owner_id),
         )
     return get_pet(pet_id)
 
@@ -145,12 +216,16 @@ def get_pet(pet_id: str):
     return dict(row) if row else None
 
 
-def list_pets() -> list:
+def list_pets(owner_id: str = None) -> list:
+    """All pets (admin) or only one owner's pets when owner_id is given."""
+    where = "WHERE p.owner_id = ?" if owner_id else ""
+    params = (owner_id,) if owner_id else ()
     with _lock, _connect() as conn:
         rows = conn.execute(
             "SELECT p.*, COUNT(a.id) AS analysis_count, MAX(a.created_at) AS last_analysis_at "
-            "FROM pets p LEFT JOIN analyses a ON a.pet_id = p.id "
-            "GROUP BY p.id ORDER BY p.created_at"
+            f"FROM pets p LEFT JOIN analyses a ON a.pet_id = p.id {where} "
+            "GROUP BY p.id ORDER BY p.created_at",
+            params,
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -158,9 +233,11 @@ def list_pets() -> list:
 # ── Analyses ─────────────────────────────────────────────────────────────────
 
 def log_analysis(pet_id, result: dict, media_type: str,
-                 source_filename: str = None, file_size_bytes: int = None) -> str:
+                 source_filename: str = None, file_size_bytes: int = None,
+                 owner_id: str = None, context: str = None) -> str:
     """Extract indexed metrics from a pipeline result and persist the full
-    record. Returns the new analysis id. pet_id may be None (unassigned)."""
+    record. Returns the new analysis id. pet_id may be None (unassigned).
+    context is the guardian-declared capture context (e.g. weekly_baseline)."""
     analysis_id = str(uuid.uuid4())
     oa = result.get("overall_assessment", {}) or {}
     pm = result.get("_pose_metrics", {}) or {}
@@ -177,8 +254,8 @@ def log_analysis(pet_id, result: dict, media_type: str,
             "species_detected, breed_detected, urgency, instrument, instrument_total, "
             "instrument_max, instrument_scorable, spinal_mean_deg, spinal_max_deg, "
             "detection_coverage, vocal_event_count, pitch_mean_hz, purr_possible, "
-            "pipeline_version, prompt_version, model_used, full_json) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "pipeline_version, prompt_version, model_used, full_json, owner_id, context) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 analysis_id, pet_id, _utcnow(), media_type, source_filename,
                 file_size_bytes,
@@ -197,6 +274,8 @@ def log_analysis(pet_id, result: dict, media_type: str,
                 result.get("_prompt_version"),
                 result.get("_model_used"),
                 json.dumps(result),
+                owner_id,
+                context,
             ),
         )
     return analysis_id
@@ -207,7 +286,7 @@ def get_history(pet_id: str, limit: int = 200) -> list:
     full JSON blob — use get_analysis for a complete record."""
     with _lock, _connect() as conn:
         rows = conn.execute(
-            "SELECT id, created_at, media_type, source_filename, distress_score, zone, "
+            "SELECT id, created_at, media_type, context, source_filename, distress_score, zone, "
             "confidence, primary_state, species_detected, breed_detected, urgency, "
             "instrument, instrument_total, instrument_max, instrument_scorable, "
             "spinal_mean_deg, spinal_max_deg, detection_coverage, vocal_event_count, "
