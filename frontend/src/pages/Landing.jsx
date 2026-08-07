@@ -5,6 +5,7 @@ import axios from 'axios';
 import Footer from '../components/Footer';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001';
+const API_KEY = import.meta.env.VITE_API_KEY || '';
 
 const OPTIMAL_RECORD_DURATION = 30;
 const MAX_RECORD_DURATION = 45;
@@ -94,6 +95,8 @@ function Landing({ onAnalysisComplete }) {
       const response = await axios.post(`${API_URL}/api/video/upload`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
+          // Backend rejects uploads with 401 when API_KEY is set server-side.
+          ...(API_KEY && { 'X-API-Key': API_KEY }),
         },
         params: {
           mode: 'full',
