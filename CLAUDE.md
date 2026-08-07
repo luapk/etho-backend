@@ -85,9 +85,15 @@ GET   /api/pets/{id}/timeline           unified feed: analyses + weight entries,
                                         each analysis carries its per-asset distress_curve
                                         (sparkline-ready), zone, instrument total, quality grade,
                                         context tag — built for a scrubbable timeline UI
+POST  /api/batch/upload                 batch import (photos+videos, max 30) — returns batch_id
+GET   /api/batch/{batch_id}             batch progress (in-memory; analyses persist regardless)
 POST  /api/pets/{id}/weights            log a weight (syncs profile weight_kg, returns screening)
 GET   /api/pets/{id}/weights            weight log + breed-range assessment
 ```
+
+**Capture time, not upload time** (`media_metadata.py`): every record is dated by when the media was RECORDED — EXIF `DateTimeOriginal` for photos, container `creation_time` for videos, filename patterns (`IMG_20260315_143022`, `PXL_…`, WhatsApp `IMG-20260315-WA…`) as a fallback since messaging apps strip metadata. Without this, importing a phone backlog would stamp months of history onto a single day and destroy the record. `created_at` = observation date; `uploaded_at` = when it reached us; `capture_time_source` (exif|video_metadata|filename|unknown) makes every date auditable.
+
+**Motion-derived health signals** (`health_signals.py`): activity level (lethargy screen), movement regularity, tremor (4–12 Hz band), and postural sway (balance screen) — all from whole-frame motion and the pet's bounding box, so no paw-level keypoints required. **Uses signed displacement, not frame-difference energy**: energy is rectified and would report double the true frequency. Explicitly does NOT measure per-limb lameness, stride length, footfall timing, or weight-bearing asymmetry — those need AP-10K/DeepLabCut-class pose, and force plates remain the clinical standard. The audio service additionally flags `cough_like` events (short, aperiodic, broadband) and counts them — heuristic, confirmed by Gemini.
 
 **Weight screening** (`breed_reference.py`): typical adult ranges for ~40 dog and ~16 cat breeds (substring-matched, species-level fallback for cats only — dog breeds vary too widely). Status below/within/above range with percent outside. Always framed as a rough screen: body condition score (BCS) by a vet is the clinical standard, and every output says so. The vet report gets a Weight section (latest vs range, delta over time, full log).
 

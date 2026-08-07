@@ -49,6 +49,10 @@ _PITCH_HIGH_HZ = 600.0
 _FLAT_TONAL = 0.30    # spectral flatness below this ≈ tonal
 _FLAT_NOISY = 0.55    # above this ≈ noisy / rough
 
+# Cough screen thresholds: short, aperiodic, broadband bursts.
+_COUGH_MAX_SEC = 0.6
+_COUGH_FLATNESS_MIN = 0.5
+
 
 def _morton_inference(pitch_hz, flatness) -> str:
     """Heuristic first-pass label from Morton's motivation-structural rules.
@@ -305,14 +309,25 @@ class AudioService:
                 else:
                     contour = "rising" if trend > 0 else "falling"
 
+            duration_sec = round((e - s + 1) * frame_dt, 2)
+            # Cough screen: short, aperiodic, broadband-noisy bursts. Coughing
+            # frequency is clinically meaningful (cardiac disease, tracheal
+            # collapse, kennel cough), so it is worth counting — but this is
+            # a HEURISTIC that also catches sneezes, thumps and door bangs.
+            # Gemini identifies what the sound actually is; the DSP supplies
+            # the count and timing.
+            cough_like = bool(duration_sec <= _COUGH_MAX_SEC
+                              and fl >= _COUGH_FLATNESS_MIN
+                              and f0 is None)
             events.append({
                 "timestamp_sec": round(start_sec, 2),
-                "duration_sec": round((e - s + 1) * frame_dt, 2),
+                "duration_sec": duration_sec,
                 "pitch_hz": round(f0, 1) if f0 is not None else None,
                 "pitch_contour": contour,
                 "spectral_flatness": round(fl, 3),
                 "tonality": "tonal" if fl < _FLAT_TONAL else ("noisy" if fl > _FLAT_NOISY else "mixed"),
                 "purr_band_ratio": round(purr_r, 3),
+                "cough_like": cough_like,
                 "morton_inference": _morton_inference(f0, fl),
             })
 
@@ -326,6 +341,15 @@ class AudioService:
             "vocal_activity_coverage": round(active_time / max(duration, eps), 2),
             "vocalization_event_count": len(events),
             "vocalization_events": events[:20],  # cap injected list
+            "cough_like_events": {
+                "count": sum(1 for ev in events if ev["cough_like"]),
+                "timestamps_sec": [ev["timestamp_sec"] for ev in events
+                                   if ev["cough_like"]][:20],
+                "note": ("Heuristic screen for short aperiodic bursts — also "
+                         "triggered by sneezes, thumps and door bangs. Gemini "
+                         "confirms what each sound is; a rising cough count "
+                         "across visits is the signal worth watching."),
+            },
             "tonality": {
                 "mean_flatness": round(float(np.mean(flatness)), 3),
                 "interpretation": (

@@ -188,6 +188,15 @@ _MIGRATIONS = [
                                             # de-emphasise low-quality observations
     ("analyses", "resp_rate_bpm", "REAL"),      # measured sleeping respiratory rate
     ("analyses", "resp_confidence", "TEXT"),    # high|medium — only usable rates stored
+    # created_at holds WHEN THE BEHAVIOUR HAPPENED (capture time when known),
+    # because every trend and baseline is ordered by observation date.
+    # uploaded_at records when it reached us; capture_time_source says how
+    # the date is known (exif|video_metadata|filename|unknown).
+    ("analyses", "uploaded_at", "TEXT"),
+    ("analyses", "capture_time_source", "TEXT"),
+    ("analyses", "activity_level", "REAL"),     # measured motion energy
+    ("analyses", "tremor_detected", "INTEGER"),
+    ("analyses", "cough_like_count", "INTEGER"),
 ]
 
 
@@ -318,17 +327,25 @@ def list_pets(owner_id: str = None) -> list:
 
 def log_analysis(pet_id, result: dict, media_type: str,
                  source_filename: str = None, file_size_bytes: int = None,
-                 owner_id: str = None, context: str = None) -> str:
+                 owner_id: str = None, context: str = None,
+                 observed_at: str = None,
+                 capture_time_source: str = None) -> str:
     """Extract indexed metrics from a pipeline result and persist the full
     record. Returns the new analysis id. pet_id may be None (unassigned).
     context is the guardian-declared capture context (e.g. weekly_baseline)."""
     analysis_id = str(uuid.uuid4())
+    now = _utcnow()
+    # The record's date is when the media was CAPTURED when we can tell —
+    # otherwise a bulk backlog import would stack months of history onto
+    # a single day and destroy the longitudinal record.
+    created_at = observed_at or now
     oa = result.get("overall_assessment", {}) or {}
     pm = result.get("_pose_metrics", {}) or {}
     am = result.get("_audio_metrics", {}) or {}
     ins = result.get("instrument_scores", {}) or {}
     cq = result.get("capture_quality", {}) or {}
     resp = result.get("_respiration", {}) or {}
+    hs = result.get("_health_signals", {}) or {}
     sc = pm.get("spinal_curvature", {}) or {}
     pitch = am.get("pitch", {}) or {}
     purr = am.get("solicitation_purr", {}) or {}
@@ -341,10 +358,11 @@ def log_analysis(pet_id, result: dict, media_type: str,
             "instrument_max, instrument_scorable, spinal_mean_deg, spinal_max_deg, "
             "detection_coverage, vocal_event_count, pitch_mean_hz, purr_possible, "
             "pipeline_version, prompt_version, model_used, full_json, owner_id, context, "
-            "quality_grade, resp_rate_bpm, resp_confidence) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "quality_grade, resp_rate_bpm, resp_confidence, uploaded_at, "
+            "capture_time_source, activity_level, tremor_detected, cough_like_count) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
-                analysis_id, pet_id, _utcnow(), media_type, source_filename,
+                analysis_id, pet_id, created_at, media_type, source_filename,
                 file_size_bytes,
                 oa.get("distress_score"), oa.get("zone"), oa.get("confidence"),
                 oa.get("primary_state"),
@@ -366,6 +384,11 @@ def log_analysis(pet_id, result: dict, media_type: str,
                 cq.get("grade"),
                 resp.get("breaths_per_min") if resp.get("usable") else None,
                 resp.get("confidence") if resp.get("usable") else None,
+                now,
+                capture_time_source,
+                (hs.get("activity_level") or {}).get("value"),
+                1 if (hs.get("tremor") or {}).get("detected") else (0 if hs else None),
+                (am.get("cough_like_events") or {}).get("count"),
             ),
         )
     return analysis_id
@@ -376,8 +399,9 @@ def get_history(pet_id: str, limit: int = 200) -> list:
     full JSON blob — use get_analysis for a complete record."""
     with _lock, _connect() as conn:
         rows = conn.execute(
-            "SELECT id, created_at, media_type, context, quality_grade, resp_rate_bpm, "
-            "resp_confidence, source_filename, distress_score, zone, "
+            "SELECT id, created_at, uploaded_at, capture_time_source, media_type, context, "
+            "quality_grade, resp_rate_bpm, resp_confidence, activity_level, "
+            "tremor_detected, cough_like_count, source_filename, distress_score, zone, "
             "confidence, primary_state, species_detected, breed_detected, urgency, "
             "instrument, instrument_total, instrument_max, instrument_scorable, "
             "spinal_mean_deg, spinal_max_deg, detection_coverage, vocal_event_count, "

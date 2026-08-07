@@ -4,7 +4,9 @@ Full video understanding with pose estimation, annotated video output,
 and complete ethological research framework.
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Header, Depends
+from fastapi import (FastAPI, UploadFile, File, HTTPException, Query, Header,
+                     Depends, BackgroundTasks)
+from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, PlainTextResponse
 from pydantic import BaseModel
@@ -19,6 +21,8 @@ from .services.gemini_service import analyze_video, GEMINI_MODEL
 from .services.yolo_pose_service import YoloPoseService
 from .services.audio_service import AudioService
 from .services.respiration_service import RespirationService
+from .services.health_signals import HealthSignalService
+from .services import media_metadata
 from .services import (
     pet_store, vet_report, capture_quality, breed_reference, model_selector,
 )
@@ -91,6 +95,8 @@ _yolo = YoloPoseService()
 _audio = AudioService()
 # Sleeping respiratory-rate service (runs ONLY on context=sleeping_baseline)
 _resp = RespirationService()
+# Motion-derived health signals (activity, tremor, sway) — every video
+_health = HealthSignalService()
 # Initialise the longitudinal pet/analysis store (SQLite at $DATA_DIR/etho.db)
 pet_store.init_db()
 
@@ -118,6 +124,26 @@ class PetUpdate(BaseModel):
     birthdate: Optional[str] = None
     weight_kg: Optional[float] = None
     notes: Optional[str] = None
+
+
+# ── Batch upload job store ───────────────────────────────────────────────────
+# In-memory: a phone backlog import can take minutes, far longer than an HTTP
+# request should hold open, so batches run in the background and are polled.
+# Jobs are lost on restart — acceptable because the ANALYSES are persisted to
+# the database as each file completes; only the progress view is ephemeral.
+_batch_jobs: dict = {}
+_BATCH_MAX_FILES = 30
+
+
+def _capture_info(temp_path: str, filename: str, media_type: str) -> dict:
+    """When was this recorded? Falls back to upload time, always recording
+    which source the date came from."""
+    info = media_metadata.extract_capture_time(temp_path, filename, media_type)
+    if info["captured_at"]:
+        print(f"  → Captured {info['captured_at']} (source: {info['source']})")
+    else:
+        print("  → No capture time in metadata — using upload time")
+    return info
 
 
 def config_status() -> dict:
@@ -187,7 +213,8 @@ def _log_startup_banner():
 
 def _log_to_history(pet_id, result: dict, media_type: str,
                     filename: str, size_bytes: int,
-                    owner_id: str = None, context: str = None):
+                    owner_id: str = None, context: str = None,
+                    observed_at: str = None, capture_time_source: str = None):
     """Persist a successful analysis to the pet's longitudinal record.
     pet_id may be None — the record is stored unassigned (but still
     owner-scoped). Pet ownership is validated by the endpoint BEFORE the
@@ -197,6 +224,7 @@ def _log_to_history(pet_id, result: dict, media_type: str,
             pet_id, result, media_type=media_type,
             source_filename=filename, file_size_bytes=size_bytes,
             owner_id=owner_id, context=context,
+            observed_at=observed_at, capture_time_source=capture_time_source,
         )
         result["analysis_id"] = analysis_id
         result["pet_id"] = pet_id
@@ -348,10 +376,21 @@ async def upload_and_analyze(
             else:
                 print("\nStep 1c: SRR skipped (respiration service unavailable)")
 
+        # ── Step 1d: Motion-derived health signals ────────────────────────
+        health = {}
+        if _health.available:
+            health = _health.analyze(temp_path, pose_frames)
+            if health:
+                act = health.get("activity_level", {}).get("value")
+                trem = (health.get("tremor") or {}).get("detected")
+                print(f"  → Activity {act}, tremor: {'yes' if trem else 'no'}")
+
         # ── Step 2+3: Gemini two-pass analysis ────────────────────────────
         print("\nStep 2-3/4: Gemini ethological analysis...")
         result = analyze_video(temp_path, use_cache=use_cache, pose_metrics=pose_metrics,
                                audio_metrics=audio_metrics, respiration=respiration)
+        if health:
+            result["_health_signals"] = health
 
         if result.get("error"):
             error_type = result.get("error_type", "unknown")
@@ -380,8 +419,12 @@ async def upload_and_analyze(
             probe_video_meta(temp_path), yolo_available=_yolo.available,
             respiration=respiration,
         )
+        cap = _capture_info(temp_path, file.filename, "video")
+        result["capture_time"] = cap
         _log_to_history(pet_id, result, "video", file.filename, file_size,
-                        owner_id=auth["owner_id"], context=context)
+                        owner_id=auth["owner_id"], context=context,
+                        observed_at=cap["captured_at"],
+                        capture_time_source=cap["source"])
 
         return {"success": True, "data": result}
 
@@ -465,8 +508,12 @@ async def upload_and_analyze_image(
             "image", pose_metrics, None,
             probe_image_meta(temp_path), yolo_available=_yolo.available,
         )
+        cap = _capture_info(temp_path, file.filename, "image")
+        result["capture_time"] = cap
         _log_to_history(pet_id, result, "image", file.filename, file_size,
-                        owner_id=auth["owner_id"], context=context)
+                        owner_id=auth["owner_id"], context=context,
+                        observed_at=cap["captured_at"],
+                        capture_time_source=cap["source"])
 
         return {"success": True, "data": result}
 
@@ -519,6 +566,198 @@ async def get_capture_protocol():
     incident-capture rules, photo framing, and the available context tags.
     Public — contains no user data."""
     return {"success": True, "protocol": capture_quality.CAPTURE_PROTOCOL}
+
+
+# ── Batch upload (phone backlog import) ──────────────────────────────────────
+
+_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+_VIDEO_TYPES = {"video/mp4", "video/quicktime", "video/x-msvideo",
+                "video/webm", "video/x-matroska"}
+
+
+def _process_batch(batch_id: str, staged: list, pet_id, owner_id, context, annotate):
+    """Run a staged batch sequentially in the background.
+
+    Each file is analysed and logged as it completes, so a batch that is
+    interrupted still leaves every finished analysis safely in the database.
+    Each record is dated by its own capture time, which is the whole point
+    of batch import: a year of phone backlog lands across a year of the
+    timeline, not all on today.
+    """
+    job = _batch_jobs[batch_id]
+    for entry in staged:
+        path, filename, media_type, size = (entry["path"], entry["filename"],
+                                            entry["media_type"], entry["size"])
+        item = {"filename": filename, "media_type": media_type,
+                "status": "processing"}
+        job["items"].append(item)
+        try:
+            pose_frames, pose_metrics = [], {}
+            audio_metrics, respiration, health = {}, None, {}
+
+            if media_type == "video":
+                if annotate and _yolo.available:
+                    pose_frames = _yolo.process_video(path)
+                    pose_metrics = _yolo.summarize_metrics(pose_frames)
+                if _audio.available:
+                    audio_metrics = _audio.analyze(path)
+                if context == "sleeping_baseline" and _resp.available:
+                    respiration = _resp.analyze(path, pose_frames)
+                if _health.available:
+                    health = _health.analyze(path, pose_frames)
+                result = analyze_video(path, pose_metrics=pose_metrics,
+                                       audio_metrics=audio_metrics,
+                                       respiration=respiration)
+            else:
+                if _yolo.available:
+                    pose_frames = _yolo.process_image(path)
+                    pose_metrics = _yolo.summarize_metrics(pose_frames)
+                result = analyze_video(path, pose_metrics=pose_metrics,
+                                       media_kind="image")
+
+            if result.get("error"):
+                item.update(status="failed", error=result.get("message", "analysis failed"))
+                job["failed"] += 1
+                continue
+
+            if health:
+                result["_health_signals"] = health
+            if media_type == "video":
+                extract_instrument_evidence(path, result.get("instrument_scores"))
+                if annotate:
+                    vid = annotate_video(path, pose_frames, result)
+                    if vid:
+                        result["annotated_video_id"] = vid
+                meta = probe_video_meta(path)
+            else:
+                if annotate:
+                    mid = annotate_image(path, pose_frames, result)
+                    if mid:
+                        result["annotated_video_id"] = mid
+                meta = probe_image_meta(path)
+
+            result["capture_quality"] = capture_quality.assess(
+                media_type, pose_metrics, audio_metrics or None, meta,
+                yolo_available=_yolo.available, respiration=respiration,
+            )
+            cap = _capture_info(path, filename, media_type)
+            result["capture_time"] = cap
+            _log_to_history(pet_id, result, media_type, filename, size,
+                            owner_id=owner_id, context=context,
+                            observed_at=cap["captured_at"],
+                            capture_time_source=cap["source"])
+            item.update(
+                status="done",
+                analysis_id=result.get("analysis_id"),
+                observed_at=cap["captured_at"],
+                capture_time_source=cap["source"],
+                distress_score=(result.get("overall_assessment") or {}).get("distress_score"),
+                zone=(result.get("overall_assessment") or {}).get("zone"),
+                quality_grade=result["capture_quality"]["grade"],
+            )
+            job["completed"] += 1
+        except Exception as e:
+            item.update(status="failed", error=str(e))
+            job["failed"] += 1
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    job["status"] = "done"
+
+
+@app.post("/api/batch/upload")
+async def batch_upload(
+    background: BackgroundTasks,
+    files: List[UploadFile] = File(..., description="Photos and/or videos"),
+    pet_id: Optional[str] = Query(default=None),
+    context: Optional[str] = Query(default=None),
+    annotate: bool = Query(default=True),
+    auth: dict = Depends(get_auth),
+):
+    """Upload a batch of photos/videos (a phone camera-roll selection).
+
+    Each file is dated by its OWN capture time — EXIF for photos, container
+    metadata for videos, filename pattern as a fallback — so importing a
+    backlog rebuilds real history instead of stacking everything on today.
+
+    Returns immediately with a batch_id; poll GET /api/batch/{batch_id} for
+    progress. Videos take ~1 minute each, so a large batch runs for a while.
+    """
+    if pet_id:
+        _authorized_pet(pet_id, auth)
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+    if len(files) > _BATCH_MAX_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many files ({len(files)}). Maximum {_BATCH_MAX_FILES} "
+                   f"per batch — split the import into smaller batches.")
+
+    cleanup_old_videos(max_age_secs=7200)
+
+    staged, rejected = [], []
+    for f in files:
+        ctype = f.content_type or ""
+        if ctype in _IMAGE_TYPES:
+            media_type, limit = "image", 20 * 1024 * 1024
+        elif ctype in _VIDEO_TYPES:
+            media_type, limit = "video", 100 * 1024 * 1024
+        else:
+            rejected.append({"filename": f.filename, "reason": f"unsupported type {ctype}"})
+            continue
+
+        f.file.seek(0, 2)
+        size = f.file.tell()
+        f.file.seek(0)
+        if size > limit:
+            rejected.append({"filename": f.filename,
+                             "reason": f"too large ({size // (1024*1024)}MB)"})
+            continue
+
+        ext = os.path.splitext(f.filename or "")[1] or (".jpg" if media_type == "image" else ".mp4")
+        fd, path = tempfile.mkstemp(suffix=ext)
+        with os.fdopen(fd, "wb") as out:
+            shutil.copyfileobj(f.file, out)
+        staged.append({"path": path, "filename": f.filename,
+                       "media_type": media_type, "size": size})
+
+    if not staged:
+        raise HTTPException(status_code=400,
+                            detail={"message": "No usable files", "rejected": rejected})
+
+    import uuid as _uuid
+    batch_id = str(_uuid.uuid4())
+    _batch_jobs[batch_id] = {
+        "batch_id": batch_id, "status": "processing",
+        "total": len(staged), "completed": 0, "failed": 0,
+        "rejected": rejected, "items": [],
+        "owner_id": auth["owner_id"], "pet_id": pet_id,
+    }
+    background.add_task(_process_batch, batch_id, staged, pet_id,
+                        auth["owner_id"], context, annotate)
+
+    print(f"\nBATCH {batch_id}: {len(staged)} file(s) queued, "
+          f"{len(rejected)} rejected")
+    return {"success": True, "batch_id": batch_id, "queued": len(staged),
+            "rejected": rejected,
+            "poll": f"/api/batch/{batch_id}",
+            "note": "Videos take roughly a minute each; poll for progress."}
+
+
+@app.get("/api/batch/{batch_id}")
+async def batch_status(batch_id: str, auth: dict = Depends(get_auth)):
+    """Progress of a batch import. Owners see only their own batches."""
+    job = _batch_jobs.get(batch_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Batch not found "
+                            "(progress is not kept across restarts; completed "
+                            "analyses are still saved to the pet's record)")
+    if auth["role"] == "owner" and job["owner_id"] != auth["owner_id"]:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    return {"success": True, "batch": job}
 
 
 # ── Pet profiles & longitudinal record ───────────────────────────────────────
