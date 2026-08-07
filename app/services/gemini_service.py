@@ -121,11 +121,65 @@ CRITICAL:
         return {"scene_summary": "Scene verification failed", "animals_visible": []}
 
 
-def analyze_video_with_context(video_file, scene_context: dict, pose_metrics: dict = None) -> str:
+def _build_audio_section(audio_metrics: dict) -> str:
+    """Render measured acoustics as a ground-truth block for Pass 2, mirroring
+    the YOLO pose section. Measured values are objective; Morton labels prime."""
+    if not audio_metrics or not audio_metrics.get("audio_present"):
+        return ""
+
+    s = "\n## AUDIO ACOUSTIC MEASUREMENTS (Signal-Processing Ground Truth)\n"
+    s += ("These are objectively measured from the audio track (pitch via "
+          "autocorrelation, tonality via spectral flatness, 220-520 Hz "
+          "solicitation-purr band). Cite them when making vocalization claims.\n\n")
+
+    cov = audio_metrics.get("vocal_activity_coverage", 0)
+    dur = audio_metrics.get("duration_analyzed_sec", 0)
+    s += f"AUDIO ANALYSED: {dur}s  |  VOCAL ACTIVITY COVERAGE: {cov:.0%}\n"
+
+    if "pitch" in audio_metrics:
+        p = audio_metrics["pitch"]
+        s += f"PITCH (F0): mean {p['mean_hz']} Hz (range {p['min_hz']}-{p['max_hz']} Hz)\n"
+    ton = audio_metrics.get("tonality", {})
+    if ton:
+        s += (f"TONALITY: mean spectral flatness {ton.get('mean_flatness')} "
+              f"— {ton.get('interpretation')} "
+              f"(Morton: tonal=fear/appeasement, noisy/rough=threat)\n")
+    purr = audio_metrics.get("solicitation_purr", {})
+    if purr:
+        s += (f"SOLICITATION-PURR BAND (220-520 Hz): peak ratio "
+              f"{purr.get('peak_purr_band_ratio')} — "
+              f"{'POSSIBLE solicitation purr' if purr.get('possible') else 'not indicated'} "
+              f"(heuristic; confirm audibly)\n")
+
+    events = audio_metrics.get("vocalization_events", [])
+    if events:
+        s += f"\nMEASURED VOCALIZATION EVENTS ({audio_metrics.get('vocalization_event_count', len(events))} total):\n"
+        for ev in events:
+            mm = int(ev["timestamp_sec"] // 60)
+            ss = int(ev["timestamp_sec"] % 60)
+            pitch = f"{ev['pitch_hz']}Hz" if ev.get("pitch_hz") is not None else "unvoiced"
+            s += (f"  - {mm}:{ss:02d} dur {ev['duration_sec']}s, {pitch} "
+                  f"{ev.get('pitch_contour', '')}, {ev.get('tonality', '')} "
+                  f"→ {ev.get('morton_inference', '')}\n")
+
+    s += (
+        "\nINTEGRATION RULE: When describing vocalizations, cite these measured "
+        "acoustics, e.g. 'growl measured at 180 Hz, noisy spectrum (Morton: low + "
+        "rough = threat)' rather than vague terms. You identify WHAT each sound is "
+        "(bark/meow/growl/purr/whine); the measurements tell you its pitch and "
+        "quality. If your identification conflicts with a measurement, report both "
+        "and note the discrepancy.\n"
+    )
+    return s
+
+
+def analyze_video_with_context(video_file, scene_context: dict, pose_metrics: dict = None,
+                               audio_metrics: dict = None) -> str:
     """
     PASS 2: Full ethological analysis WITH scene context locked in.
     The AI must analyze based on the verified scene, not hallucinated context.
     pose_metrics: optional YOLO-derived measurements injected as objective ground truth.
+    audio_metrics: optional signal-processing acoustics injected as ground truth.
     """
     print(f"  → Pass 2: Ethological analysis with verified context...")
     
@@ -168,6 +222,8 @@ def analyze_video_with_context(video_file, scene_context: dict, pose_metrics: di
             "rather than vague terms like 'appears hunched'.\n"
         )
 
+    audio_section = _build_audio_section(audio_metrics)
+
     context_str = f"""
 ## VERIFIED SCENE CONTEXT (You must base your analysis on THIS, not assumptions)
 
@@ -184,7 +240,7 @@ ACTIONS OBSERVED: {', '.join(actions) if actions else 'None specified'}
 SCENE SUMMARY: {scene_summary}
 
 AUDIO: {scene_context.get('audio_description', 'Not analyzed')}
-{pose_section}
+{pose_section}{audio_section}
 ---
 
 CRITICAL INSTRUCTION: Your analysis MUST be consistent with the verified scene above.
@@ -366,7 +422,8 @@ def validate_and_enrich_response(result: dict, scene_context: dict) -> dict:
     return result
 
 
-def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = None) -> dict:
+def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = None,
+                  audio_metrics: dict = None) -> dict:
     """
     Main entry point for video analysis.
     Uses TWO-PASS VERIFICATION to prevent hallucinations:
@@ -409,7 +466,8 @@ def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = 
         else:
             print("\nStep 3/3: Running ethological analysis with verified context...")
         
-        response_text = analyze_video_with_context(video_file, scene_context, pose_metrics)
+        response_text = analyze_video_with_context(video_file, scene_context, pose_metrics,
+                                                   audio_metrics)
         result = parse_json_response(response_text)
         
         # Check for parse errors
@@ -437,6 +495,8 @@ def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = 
         result["_analysis_version"] = "etho-v16-pose"
         if pose_metrics:
             result["_pose_metrics"] = pose_metrics
+        if audio_metrics:
+            result["_audio_metrics"] = audio_metrics
         
         print(f"\n✓ Analysis complete!")
         print(f"  Species: {result.get('species', 'unknown')}")

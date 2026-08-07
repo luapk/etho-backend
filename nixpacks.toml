@@ -1,0 +1,4 @@
+# Install ffmpeg so the audio acoustic service can extract audio tracks.
+# aptPkgs is additive — it does not replace Nixpacks' auto-detected Python setup.
+[phases.setup]
+aptPkgs = ["ffmpeg"]

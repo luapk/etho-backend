@@ -15,6 +15,7 @@ import io
 
 from .services.gemini_service import analyze_video
 from .services.yolo_pose_service import YoloPoseService
+from .services.audio_service import AudioService
 from .services.video_annotator import (
     annotate_video,
     get_annotated_video_path,
@@ -47,6 +48,8 @@ app.add_middleware(
 
 # Initialise YOLO once at startup (downloads weights on first run)
 _yolo = YoloPoseService()
+# Initialise audio acoustic service once at startup (checks ffmpeg + scipy)
+_audio = AudioService()
 
 
 @app.get("/")
@@ -57,9 +60,11 @@ async def root():
         "version": "16.0.0",
         "engine": "gemini-2.0-flash + yolo11-pose",
         "pose_tracking": _yolo.available,
+        "audio_analysis": _audio.available,
         "features": [
             "YOLO11-Pose keypoint detection",
             "Spinal curvature measurement",
+            "Acoustic measurement (pitch, tonality, purr-band)",
             "Annotated video output",
             "DogFACS / Feline Grimace Scale analysis",
             "Morton's motivation-structural rules",
@@ -75,6 +80,7 @@ async def health_check():
         "status": "healthy",
         "gemini_configured": bool(os.environ.get("GEMINI_API_KEY")),
         "yolo_available": _yolo.available,
+        "audio_available": _audio.available,
         "version": "16.0.0",
     }
 
@@ -146,9 +152,25 @@ async def upload_and_analyze(
         else:
             print("\nStep 1/4: YOLO skipped (unavailable or annotate=false)")
 
+        # ── Step 1b: Audio acoustic measurement ───────────────────────────
+        audio_metrics: dict = {}
+        if _audio.available:
+            print("\nStep 1b: Audio acoustic analysis...")
+            audio_metrics = _audio.analyze(temp_path)
+            if audio_metrics.get("audio_present"):
+                pitch = audio_metrics.get("pitch", {}).get("mean_hz", "n/a")
+                print(f"  → Events: {audio_metrics.get('vocalization_event_count', 0)}, "
+                      f"mean pitch: {pitch} Hz, "
+                      f"coverage: {audio_metrics.get('vocal_activity_coverage', 0):.0%}")
+            else:
+                print("  → No usable audio track")
+        else:
+            print("\nStep 1b: Audio skipped (ffmpeg/scipy unavailable)")
+
         # ── Step 2+3: Gemini two-pass analysis ────────────────────────────
         print("\nStep 2-3/4: Gemini ethological analysis...")
-        result = analyze_video(temp_path, use_cache=use_cache, pose_metrics=pose_metrics)
+        result = analyze_video(temp_path, use_cache=use_cache, pose_metrics=pose_metrics,
+                               audio_metrics=audio_metrics)
 
         if result.get("error"):
             error_type = result.get("error_type", "unknown")

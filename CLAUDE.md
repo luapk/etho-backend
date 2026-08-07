@@ -24,13 +24,14 @@ There are no tests or linters configured. The app is deployed to Railway via Nix
 
 ## Architecture
 
-The API is a single FastAPI app (`app/main.py`) with one primary endpoint: `POST /api/video/upload`. Every request runs a **4-step pipeline** sequentially:
+The API is a single FastAPI app (`app/main.py`) with one primary endpoint: `POST /api/video/upload`. Every request runs a sequential pipeline:
 
 ```
-1. YoloPoseService.process_video()    → pose_frames, pose_metrics
-2. Gemini Pass 1 (scene verification) → scene_context (ground truth lock)
-3. Gemini Pass 2 (ethological analysis, pose_metrics injected as context)
-4. video_annotator.annotate_video()   → annotated MP4 stored in /tmp
+1.  YoloPoseService.process_video()   → pose_frames, pose_metrics
+1b. AudioService.analyze()            → audio_metrics (pitch, tonality, purr-band, events)
+2.  Gemini Pass 1 (scene verification)→ scene_context (ground truth lock)
+3.  Gemini Pass 2 (ethological analysis, pose_metrics + audio_metrics injected as context)
+4.  video_annotator.annotate_video()  → annotated MP4 stored in /tmp
 ```
 
 The annotated video ID is returned in the JSON response as `annotated_video_id` and served from `GET /api/video/annotated/{video_id}`.
@@ -40,6 +41,10 @@ The annotated video ID is returned in the JSON response as `annotated_video_id` 
 **Two-pass hallucination prevention:** Gemini runs twice. Pass 1 (`run_scene_verification`) locks in what is literally visible as a JSON ground-truth object. Pass 2 (`analyze_video_with_context`) receives that object as a hard constraint and cannot contradict it. This was the core fix for the original problem of Gemini inventing scenarios.
 
 **YOLO as measurement oracle:** `yolo_pose_service.py` samples video at 5 fps, runs `yolo11n.pt` (detection, classes 15=cat 16=dog) and `yolo11n-pose.pt` (skeleton) separately, then matches skeletons to pet bounding boxes by IoU. The derived metrics — spinal curvature (degrees deviation from nose→shoulder→hip axis), head tilt, detection coverage — are injected as a `## YOLO11-POSE MEASUREMENTS` block in the Pass 2 prompt. Gemini is instructed to cite these measurements when making posture claims rather than using vague language. YOLO uses human-pose keypoints (COCO-17) applied to animals; accuracy is approximate but sufficient for spinal angle trends and visual overlay.
+
+**Audio as measurement oracle:** `audio_service.py` is the acoustic counterpart to the YOLO oracle. It extracts the audio track via `ffmpeg` (mono, 22050 Hz, capped at 120 s) and computes *measured* acoustics with numpy/scipy: fundamental frequency (F0 via autocorrelation with octave-error mitigation + parabolic interpolation), tonality (spectral flatness), the 220–520 Hz solicitation-purr band ratio (McComb 2009), and energy-based vocalization-event segmentation with per-event pitch/contour/tonality. These are injected as a `## AUDIO ACOUSTIC MEASUREMENTS` block in the Pass 2 prompt. Division of labour: **Gemini identifies *what* a sound is** (bark/meow/growl/purr); **the DSP supplies the numbers Gemini can't hear precisely** (Hz, tonal-vs-noisy, purr-band energy), so Morton's-rule claims cite measurements instead of vague language. The per-event Morton labels the service emits are heuristic priming, not final verdicts.
+
+**Graceful audio degradation:** If `ffmpeg` is not on PATH or `scipy` is unavailable, `AudioService.available` is `False` and step 1b is skipped — the rest of the pipeline is unaffected. If the video simply has no audio track, `analyze()` returns `{}` and no audio block is injected. The `_audio` instance is created once at module load in `main.py`. Note: audio runs whenever available, independent of the `annotate` flag (unlike YOLO, which is gated on `annotate` because the annotated video needs it).
 
 **Video annotator carry-forward:** The annotator samples pose data from YOLO at 5 fps but writes every frame at full fps. It carries the last known bounding box and skeleton forward for 0.8 seconds between samples so the overlay is continuous. Timeline event text and pet-POV text persist on screen until the next event timestamp fires (not just for one frame).
 
@@ -52,6 +57,7 @@ The annotated video ID is returned in the JSON response as `annotated_video_id` 
 | `app/main.py` | FastAPI app, request validation, pipeline orchestration, file cleanup |
 | `app/services/gemini_service.py` | Gemini File API upload, two-pass analysis, JSON parsing, response validation/enrichment |
 | `app/services/yolo_pose_service.py` | Per-frame pet detection, keypoint extraction, spinal angle + head tilt calculation, metrics summary |
+| `app/services/audio_service.py` | ffmpeg audio extraction, pitch (F0) / tonality / purr-band measurement, vocalization-event segmentation, acoustic metrics summary |
 | `app/services/video_annotator.py` | Frame-by-frame rendering of bounding boxes, skeleton, breed tag, distress meter, event/POV text strips |
 | `app/prompts/ethological_prompt.py` | The entire Gemini system prompt — output schema, behavioural frameworks, FACS codes, morphological normalisation rules, YOLO integration guidance |
 
@@ -73,6 +79,15 @@ The annotated video ID is returned in the JSON response as `annotated_video_id` 
     "advisory": { "headline": "...", "urgency": "routine|elevated|critical" },
     "annotated_video_id": "uuid",
     "_pose_metrics": { "spinal_curvature": { "mean_deg": 18.4 }, "detection_coverage": 0.92 },
+    "_audio_metrics": {
+      "audio_present": true,
+      "pitch": { "mean_hz": 575.0, "min_hz": 350.0, "max_hz": 800.0 },
+      "tonality": { "mean_flatness": 0.43, "interpretation": "mixed" },
+      "solicitation_purr": { "possible": false, "peak_purr_band_ratio": 0.12 },
+      "vocalization_events": [
+        { "timestamp_sec": 5.0, "pitch_hz": 800.0, "pitch_contour": "rising", "tonality": "tonal", "morton_inference": "..." }
+      ]
+    },
     "_verified_scene": { ... }
   }
 }
@@ -89,6 +104,10 @@ The prompt (`ethological_prompt.py`) encodes peer-reviewed frameworks that Gemin
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `GEMINI_API_KEY` | Yes | Google Gemini API access |
+
+### System dependencies
+
+Audio analysis requires the `ffmpeg` binary on PATH. It is installed at build time via `nixpacks.toml` (`aptPkgs = ["ffmpeg"]`, additive to the auto-detected Python setup). Without it, `AudioService.available` is `False` and audio analysis is skipped — everything else still works. `scipy` (in `requirements.txt`) provides the DSP primitives.
 
 ### Annotated video storage
 
