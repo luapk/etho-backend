@@ -272,9 +272,50 @@ def annotate_video(video_path: str, pose_frames: list, analysis: dict) -> Option
     return video_id
 
 
+def annotate_image(image_path: str, pose_frames: list, analysis: dict) -> Optional[str]:
+    """
+    Render an annotated still (bbox, skeleton, distress meter, POV line) and
+    return its media_id. Stored as {uuid}.jpg in the same ephemeral dir and
+    served by the same download endpoint.
+    """
+    frame = cv2.imread(image_path)
+    if frame is None:
+        return None
+
+    oa = analysis.get("overall_assessment", {})
+    score = oa.get("distress_score", 50)
+    zone = oa.get("zone", "yellow")
+    color = _zone_color(zone)
+    breed = analysis.get("breed_detected", "Pet")
+
+    if pose_frames and pose_frames[0].animals:
+        for animal in pose_frames[0].animals:
+            _bbox(frame, animal.bbox, color, f"{breed} {animal.confidence:.0%}")
+            _skeleton(frame, animal.keypoints)
+            if animal.spinal_angle is not None:
+                _spinal_readout(frame, animal.spinal_angle)
+
+    lines = analysis.get("interpret_lines") or []
+    pov = (lines[0].get("pet_pov") or lines[0].get("first_person_interpretation", "")
+           if lines else "")
+    if pov:
+        _text_strip(frame, f'"{pov}"', color, y_anchor=frame.shape[0] - 60)
+    _distress_meter(frame, score, zone)
+
+    media_id = str(uuid.uuid4())
+    out_path = os.path.join(ANNOTATED_VIDEO_DIR, f"{media_id}.jpg")
+    if not cv2.imwrite(out_path, frame):
+        return None
+    print(f"  ✓ Annotated image: {media_id}")
+    return media_id
+
+
 def get_annotated_video_path(video_id: str) -> Optional[str]:
-    path = os.path.join(ANNOTATED_VIDEO_DIR, f"{video_id}.mp4")
-    return path if os.path.exists(path) else None
+    for ext in (".mp4", ".jpg"):
+        path = os.path.join(ANNOTATED_VIDEO_DIR, f"{video_id}{ext}")
+        if os.path.exists(path):
+            return path
+    return None
 
 
 def cleanup_video(video_id: str):

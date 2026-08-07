@@ -6,3 +6,4 @@ venv/
 .env
 *.pt
 /tmp/
+data/

@@ -123,6 +123,19 @@ class YoloPoseService:
               f"{sum(1 for f in frames if f.animals)} with detections")
         return frames
 
+    def process_image(self, image_path: str) -> list:
+        """Run detection + pose on a single still image. Returns a list with
+        one PoseFrame (or empty), so downstream summarize_metrics/annotation
+        code works unchanged."""
+        if not self._available:
+            return []
+        frame = cv2.imread(image_path)
+        if frame is None:
+            return []
+        pf = self._process_frame(frame, frame_idx=0, timestamp=0.0)
+        print(f"  ✓ YOLO (image): {len(pf.animals)} pet(s) detected")
+        return [pf]
+
     def _process_frame(self, frame: np.ndarray, frame_idx: int, timestamp: float) -> PoseFrame:
         pose_frame = PoseFrame(frame_idx=frame_idx, timestamp_sec=timestamp)
         try:

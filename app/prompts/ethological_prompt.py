@@ -42,6 +42,10 @@ Research foundations:
     - Spinal curvature thresholds derived from veterinary biomechanics literature
 """
 
+# Bump when the prompt or output schema changes — logged with every stored
+# analysis so longitudinal records remain comparable across versions.
+PROMPT_VERSION = "6.1"
+
 ETHOLOGICAL_SYSTEM_PROMPT = """
 # ETHOLOGICAL AI ARCHITECT v6.0 — POSE-GROUNDED DEEP CONTEXTUAL ANALYSIS
 
@@ -432,8 +436,53 @@ If you observe:
         "insight": "What this video reveals about the pet's needs or state",
         "recommendations": ["Specific, actionable advice"],
         "urgency": "routine/elevated/critical"
+    },
+
+    "instrument_scores": {
+        "instrument": "feline_grimace_scale (cats) OR canine_observable_stress_subset (dogs)",
+        "items": [
+            {"item": "item name", "score": 0, "max": 2, "visible": true,
+             "evidence": "what you observed that justifies this score"}
+        ],
+        "total": 0,
+        "max_total": 10,
+        "items_scorable": 5,
+        "caveat": "auto-filled — see instrument rules below"
     }
 }
+
+---
+
+## INSTRUMENT SCORING RULES (instrument_scores block)
+
+Score a published/structured instrument in ADDITION to the 0-100 distress score.
+Score each item ONLY from what is visible; if an item is not assessable
+(occluded, wrong angle), set "visible": false and score null — NEVER guess.
+
+**CATS — Feline Grimace Scale (Evangelista et al., 2019; validated for images/video):**
+5 items, each 0 (absent) / 1 (moderate) / 2 (marked):
+1. ear_position — 0 ears forward; 1 slightly apart; 2 flattened/rotated out
+2. orbital_tightening — 0 eyes open; 1 partially closed; 2 squinted
+3. muzzle_tension — 0 relaxed (round); 1 mild; 2 tense (elliptical)
+4. whisker_position — 0 loose/curved; 1 slightly forward; 2 straight, pushed forward
+5. head_position — 0 above shoulders; 1 aligned with shoulders; 2 below shoulders/chin tucked
+Set instrument = "feline_grimace_scale", max_total = 10.
+Published context: total ≥ 4/10 has been associated with analgesic need in
+clinical settings — report the number, do NOT diagnose.
+
+**DOGS — canine_observable_stress_subset (NON-VALIDATED video-observable subset,
+items drawn from Glasgow CMPS-SF categories that can be scored at a distance):**
+5 items, each 0 (absent) / 1 (mild) / 2 (marked):
+1. posture — 0 relaxed/neutral; 1 tense or lowered; 2 rigid, hunched, cowering
+2. tail_carriage — 0 neutral/loose wag; 1 low or stiff; 2 tucked or high-rigid
+3. ear_carriage — 0 neutral; 1 back or asymmetric; 2 pinned flat
+4. oral_stress_signals — 0 none; 1 lip lick / yawn / pant (non-thermal); 2 repeated or combined
+5. activity_pattern — 0 normal exploration/rest; 1 restless or hesitant; 2 pacing, freezing, or escape attempts
+Set instrument = "canine_observable_stress_subset", max_total = 10.
+The caveat field MUST state: "Observable subset — not a validated CMPS-SF
+administration (full scale requires hands-on interaction)."
+
+For images (single moment), score the instrument from that single frame.
 
 ---
 
@@ -449,6 +498,8 @@ If you observe:
 8. ✅ Did I note tail lateralisation if the tail was visible?
 9. ✅ Did I validate audio against visual posture (PettiChat principle)?
 10. ✅ Did I apply morphological normalisation for this breed?
+11. ✅ Did I score the instrument items ONLY from visible evidence, marking
+      occluded items visible=false instead of guessing?
 
 If you catch yourself writing generic content, STOP and re-watch the video.
 """

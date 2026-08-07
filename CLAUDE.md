@@ -24,7 +24,7 @@ There are no tests or linters configured. The app is deployed to Railway via Nix
 
 ## Architecture
 
-The API is a single FastAPI app (`app/main.py`) with one primary endpoint: `POST /api/video/upload`. Every request runs a sequential pipeline:
+The API is a single FastAPI app (`app/main.py`) with two analysis endpoints — `POST /api/video/upload` and `POST /api/image/upload` — plus a longitudinal record layer (pet profiles, analysis history, trends, vet reports). Every video request runs a sequential pipeline:
 
 ```
 1.  YoloPoseService.process_video()   → pose_frames, pose_metrics
@@ -34,7 +34,30 @@ The API is a single FastAPI app (`app/main.py`) with one primary endpoint: `POST
 4.  video_annotator.annotate_video()  → annotated MP4 stored in /tmp
 ```
 
-The annotated video ID is returned in the JSON response as `annotated_video_id` and served from `GET /api/video/annotated/{video_id}`.
+The annotated video ID is returned in the JSON response as `annotated_video_id` and served from `GET /api/video/annotated/{video_id}` (which also serves annotated stills as `.jpg`). Image uploads run the same pipeline minus audio and with a single-frame YOLO pass; Gemini receives an IMAGE MODE addendum (single-entry timeline, no invented motion/sound).
+
+### Longitudinal record layer (v17)
+
+Analyses can be logged against pet profiles, turning one-shot results into a record over time:
+
+```
+POST  /api/pets                         create profile (name, species, breed, sex, birthdate, weight)
+GET   /api/pets                         list with analysis counts
+PATCH /api/pets/{id}                    update profile
+POST  /api/video/upload?pet_id=...      analysis is logged to that pet (pet_id optional everywhere)
+GET   /api/pets/{id}/history            chronological indexed metrics (for timeline/chart UI)
+GET   /api/pets/{id}/trends             baseline ± SD, latest deviation, slope (pts/week), red flags
+GET   /api/analyses/{id}                full stored raw result (provenance)
+GET   /api/pets/{id}/vet-report?format=markdown|json&reason=...   pre-consultation document
+```
+
+Storage is SQLite (stdlib, no new deps) at `$DATA_DIR/etho.db` (`pet_store.py`, default `./data`). **On Railway, mount a volume and set `DATA_DIR` to it — otherwise records are lost on redeploy.** Every analysis row stores the complete raw result JSON plus indexed metric columns, stamped with `pipeline_version` / `prompt_version` / `model_used` (bump `PROMPT_VERSION` in `ethological_prompt.py` when the prompt changes).
+
+Scientific-validity rules encoded in this layer:
+- **Measured vs AI-estimated are never mixed** — YOLO/DSP columns are labelled measured; distress/instrument scores are labelled AI-estimated, in both the DB layout and the vet report.
+- **Instrument scoring** (`instrument_scores` in the schema): cats get the Feline Grimace Scale (validated on stills, 5 items 0–2, ≥4/10 published threshold *reported, not interpreted*); dogs get an explicitly-labelled non-validated observable subset of Glasgow CMPS-SF. `validate_and_enrich_response()` clamps item scores, nulls invisible items, and recomputes totals — never trusts the model's self-reported total.
+- **Each pet is its own control**: baseline = mean ± SD of prior observations (≥3), deviation flagged at ≥1.5 SD, slope = least-squares points/week (≥4). Formulas are stated verbatim in the report's methodology section.
+- **Vet reports contain observations, never diagnoses**, and always carry the methodology/limitations section and disclaimer (`vet_report.py`).
 
 ### Key design decisions
 
@@ -58,6 +81,8 @@ The annotated video ID is returned in the JSON response as `annotated_video_id` 
 | `app/services/gemini_service.py` | Gemini File API upload, two-pass analysis, JSON parsing, response validation/enrichment |
 | `app/services/yolo_pose_service.py` | Per-frame pet detection, keypoint extraction, spinal angle + head tilt calculation, metrics summary |
 | `app/services/audio_service.py` | ffmpeg audio extraction, pitch (F0) / tonality / purr-band measurement, vocalization-event segmentation, acoustic metrics summary |
+| `app/services/pet_store.py` | SQLite pet profiles + analysis history, indexed metrics, baseline/trend/red-flag computation |
+| `app/services/vet_report.py` | Pre-consultation report builder (structured JSON + rendered Markdown) |
 | `app/services/video_annotator.py` | Frame-by-frame rendering of bounding boxes, skeleton, breed tag, distress meter, event/POV text strips |
 | `app/prompts/ethological_prompt.py` | The entire Gemini system prompt — output schema, behavioural frameworks, FACS codes, morphological normalisation rules, YOLO integration guidance |
 
@@ -104,6 +129,8 @@ The prompt (`ethological_prompt.py`) encodes peer-reviewed frameworks that Gemin
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `GEMINI_API_KEY` | Yes | Google Gemini API access |
+| `API_KEY` | Production | X-API-Key auth on upload/pets/research endpoints (skipped if unset — local dev only) |
+| `DATA_DIR` | Production | Directory for the SQLite longitudinal DB (mount a Railway volume here; default `./data` is ephemeral) |
 
 ### System dependencies
 

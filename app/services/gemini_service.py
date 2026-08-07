@@ -9,7 +9,7 @@ import json
 import time
 import re
 import google.generativeai as genai
-from ..prompts.ethological_prompt import ETHOLOGICAL_SYSTEM_PROMPT
+from ..prompts.ethological_prompt import ETHOLOGICAL_SYSTEM_PROMPT, PROMPT_VERSION
 
 # Configure Gemini
 def get_gemini_client():
@@ -22,11 +22,11 @@ def get_gemini_client():
 
 def upload_video_to_gemini(video_path: str):
     """
-    Upload video to Gemini File API for processing.
-    Gemini can handle full video understanding natively.
+    Upload media (video or image) to Gemini File API for processing.
+    Gemini handles both natively; videos get a processing wait.
     """
-    print(f"  → Uploading video to Gemini...")
-    
+    print(f"  → Uploading media to Gemini...")
+
     # Determine mime type
     ext = os.path.splitext(video_path)[1].lower()
     mime_types = {
@@ -35,6 +35,10 @@ def upload_video_to_gemini(video_path: str):
         '.avi': 'video/x-msvideo',
         '.webm': 'video/webm',
         '.mkv': 'video/x-matroska',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.webp': 'image/webp',
     }
     mime_type = mime_types.get(ext, 'video/mp4')
     
@@ -173,13 +177,25 @@ def _build_audio_section(audio_metrics: dict) -> str:
     return s
 
 
+_IMAGE_MODE_ADDENDUM = """
+## IMAGE MODE
+This submission is a SINGLE STILL IMAGE, not a video. Adapt accordingly:
+- timeline: exactly one entry at timestamp "0:00" describing the captured moment
+- interpret_lines: at most one entry at "0:00"
+- audio_analysis: empty lists, solicitation_purr_detected false (no audio exists)
+- Do NOT invent motion, sequence, or sounds — score only the visible moment
+- instrument_scores: score from this single frame (the FGS is validated on stills)
+"""
+
+
 def analyze_video_with_context(video_file, scene_context: dict, pose_metrics: dict = None,
-                               audio_metrics: dict = None) -> str:
+                               audio_metrics: dict = None, media_kind: str = "video") -> str:
     """
     PASS 2: Full ethological analysis WITH scene context locked in.
     The AI must analyze based on the verified scene, not hallucinated context.
     pose_metrics: optional YOLO-derived measurements injected as objective ground truth.
     audio_metrics: optional signal-processing acoustics injected as ground truth.
+    media_kind: "video" or "image" — images get a single-moment addendum.
     """
     print(f"  → Pass 2: Ethological analysis with verified context...")
     
@@ -223,6 +239,7 @@ def analyze_video_with_context(video_file, scene_context: dict, pose_metrics: di
         )
 
     audio_section = _build_audio_section(audio_metrics)
+    image_section = _IMAGE_MODE_ADDENDUM if media_kind == "image" else ""
 
     context_str = f"""
 ## VERIFIED SCENE CONTEXT (You must base your analysis on THIS, not assumptions)
@@ -240,7 +257,7 @@ ACTIONS OBSERVED: {', '.join(actions) if actions else 'None specified'}
 SCENE SUMMARY: {scene_summary}
 
 AUDIO: {scene_context.get('audio_description', 'Not analyzed')}
-{pose_section}{audio_section}
+{pose_section}{audio_section}{image_section}
 ---
 
 CRITICAL INSTRUCTION: Your analysis MUST be consistent with the verified scene above.
@@ -358,6 +375,14 @@ def validate_and_enrich_response(result: dict, scene_context: dict) -> dict:
             "headline": "Continue monitoring",
             "detailed_recommendations": [],
             "urgency": "routine"
+        },
+        "instrument_scores": {
+            "instrument": "not_scored",
+            "items": [],
+            "total": None,
+            "max_total": None,
+            "items_scorable": 0,
+            "caveat": "Instrument not scored for this submission"
         }
     }
     
@@ -408,6 +433,36 @@ def validate_and_enrich_response(result: dict, scene_context: dict) -> dict:
         result["overall_assessment"]["zone"] = "red"
         result["overall_assessment"]["zone_label"] = "ELEVATED"
     
+    # Validate instrument scores: clamp item scores to [0, max], recompute the
+    # total from visible items only, never trust a self-reported total.
+    ins = result.get("instrument_scores")
+    if isinstance(ins, dict) and isinstance(ins.get("items"), list):
+        total = 0.0
+        scorable = 0
+        any_scored = False
+        for item in ins["items"]:
+            if not isinstance(item, dict):
+                continue
+            max_score = item.get("max", 2) or 2
+            if item.get("visible") is False or item.get("score") is None:
+                item["score"] = None
+                continue
+            try:
+                score = float(item["score"])
+            except (TypeError, ValueError):
+                item["score"] = None
+                continue
+            item["score"] = max(0, min(score, max_score))
+            total += item["score"]
+            scorable += 1
+            any_scored = True
+        if any_scored:
+            ins["total"] = round(total, 1)
+            ins["items_scorable"] = scorable
+        else:
+            ins["total"] = None
+            ins["items_scorable"] = 0
+
     # Ensure interpret_lines have proper format
     if "interpret_lines" in result:
         for line in result["interpret_lines"]:
@@ -423,7 +478,7 @@ def validate_and_enrich_response(result: dict, scene_context: dict) -> dict:
 
 
 def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = None,
-                  audio_metrics: dict = None) -> dict:
+                  audio_metrics: dict = None, media_kind: str = "video") -> dict:
     """
     Main entry point for video analysis.
     Uses TWO-PASS VERIFICATION to prevent hallucinations:
@@ -467,7 +522,7 @@ def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = 
             print("\nStep 3/3: Running ethological analysis with verified context...")
         
         response_text = analyze_video_with_context(video_file, scene_context, pose_metrics,
-                                                   audio_metrics)
+                                                   audio_metrics, media_kind)
         result = parse_json_response(response_text)
         
         # Check for parse errors
@@ -492,7 +547,9 @@ def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = 
         # Add metadata
         result["_model_used"] = "gemini-2.0-flash"
         result["_from_cache"] = False
-        result["_analysis_version"] = "etho-v16-pose"
+        result["_analysis_version"] = "etho-v17-longitudinal"
+        result["_prompt_version"] = PROMPT_VERSION
+        result["_media_kind"] = media_kind
         if pose_metrics:
             result["_pose_metrics"] = pose_metrics
         if audio_metrics:
