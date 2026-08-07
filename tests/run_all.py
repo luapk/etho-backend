@@ -10,7 +10,8 @@ Each suite uses a throwaway DATA_DIR — your real database is never touched.
 """
 import subprocess, sys, os
 
-SUITES = ["test_longitudinal.py", "test_auth_quality.py", "test_timeline_weight.py"]
+SUITES = ["test_longitudinal.py", "test_auth_quality.py", "test_timeline_weight.py",
+          "test_model_selector.py"]
 
 here = os.path.dirname(os.path.abspath(__file__))
 root = os.path.dirname(here)

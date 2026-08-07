@@ -18,7 +18,9 @@ import io
 from .services.gemini_service import analyze_video, GEMINI_MODEL
 from .services.yolo_pose_service import YoloPoseService
 from .services.audio_service import AudioService
-from .services import pet_store, vet_report, capture_quality, breed_reference
+from .services import (
+    pet_store, vet_report, capture_quality, breed_reference, model_selector,
+)
 from .services.video_annotator import (
     annotate_video,
     annotate_image,
@@ -599,6 +601,42 @@ async def list_models():
             "description": "Real-time keypoint detection for bounding boxes, skeleton overlay, and spinal angle measurement",
         },
         "default": GEMINI_MODEL,
+    }
+
+
+@app.get("/api/models/available")
+async def get_available_models(
+    prefer: str = Query(default="flash", description="Tier preference: flash | pro | flash-lite"),
+    include_preview: bool = Query(default=False),
+    auth: dict = Depends(get_auth),
+):
+    """Query the Gemini API for reachable models and rank them for this
+    pipeline (admin only — it consumes the configured API key).
+
+    Reports the active model alongside the recommendation so an upgrade is a
+    deliberate decision. Changing models still means setting GEMINI_MODEL;
+    this endpoint never switches anything by itself.
+    """
+    if auth["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin key required")
+    try:
+        available = model_selector.list_available_models()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Model discovery failed: {e}")
+
+    ranked = model_selector.rank_models(available, prefer_tier=prefer,
+                                        include_preview=include_preview)
+    recommended = ranked[0]["id"] if ranked else None
+    return {
+        "success": True,
+        "active_model": GEMINI_MODEL,
+        "recommended": recommended,
+        "upgrade_available": bool(recommended and recommended != GEMINI_MODEL),
+        "candidates": ranked[:12],
+        "total_reachable": len(available),
+        "note": ("Set GEMINI_MODEL to change the analysis model, then run "
+                 "scripts/repeatability_study.py before trusting new trend "
+                 "data. Stored analyses record the model that produced them."),
     }
 
 

@@ -10,12 +10,22 @@ import time
 import re
 import google.generativeai as genai
 from ..prompts.ethological_prompt import ETHOLOGICAL_SYSTEM_PROMPT, PROMPT_VERSION
+from . import model_selector
 
 # Model is configurable so upgrades are a config change, not a deploy of new
 # code. Every stored analysis is stamped with the model that produced it
 # (model_used column), so longitudinal records stay interpretable across
-# upgrades. Roll back by setting GEMINI_MODEL=gemini-2.0-flash.
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+# upgrades.
+#
+# Pinned by default — a longitudinal record needs a stable instrument, so
+# model changes should be deliberate (scripts/check_models.py to see what's
+# available, then the repeatability study to confirm scores stay consistent).
+# GEMINI_MODEL=auto resolves the newest suitable model once at import,
+# falling back to the pinned default if discovery fails.
+GEMINI_MODEL = model_selector.resolve_model(
+    os.environ.get("GEMINI_MODEL", model_selector.STABLE_DEFAULT),
+    prefer_tier=os.environ.get("GEMINI_MODEL_TIER", "flash"),
+)
 
 # Configure Gemini
 def get_gemini_client():

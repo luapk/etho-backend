@@ -43,7 +43,14 @@ PYTHONPATH=. python tests/run_all.py
 
 # Seed two demo pets with weeks of history (timeline/trends/vet-report demo data)
 PYTHONPATH=. python scripts/seed_demo.py     # writes to $DATA_DIR (default ./data)
+
+# Model upgrade workflow (deliberate, in this order)
+PYTHONPATH=. python scripts/check_models.py                        # what's available + recommendation
+#   → set GEMINI_MODEL=<recommended>
+PYTHONPATH=. python scripts/repeatability_study.py --media-dir ./clips   # confirm score consistency
 ```
+
+**Choosing the analysis model** (`model_selector.py`): ranking is pure/testable — non-video families (embedding, imagen, veo, gemma, tts, native-audio) are excluded, previews excluded unless asked for, then tier preference → newest version → stable over preview → bare alias over dated snapshot. `GEMINI_MODEL` is **pinned by default on purpose**: a longitudinal record needs a stable instrument, so upgrades should be deliberate and followed by the repeatability study. `GEMINI_MODEL=auto` resolves once at import (never per-request), logs what it picked, and falls back to the pinned default if discovery fails. `GET /api/models/available` (admin) does the same discovery from a deployed instance but never switches anything itself.
 
 Test suites use throwaway `DATA_DIR`s and never touch the real database. `scripts/seed_demo.py` refuses to double-seed; delete the DB or point `DATA_DIR` elsewhere to reseed.
 
@@ -176,7 +183,8 @@ The prompt (`ethological_prompt.py`) encodes peer-reviewed frameworks that Gemin
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `GEMINI_API_KEY` | Yes | Google Gemini API access |
-| `GEMINI_MODEL` | No | Gemini model ID (default `gemini-2.5-flash`); every analysis row is stamped with the model that produced it, so upgrades don't corrupt longitudinal comparisons |
+| `GEMINI_MODEL` | No | Gemini model ID (default `gemini-2.5-flash`), or `auto` to resolve the newest suitable model at startup. Every analysis row is stamped with the model that produced it, so upgrades don't corrupt longitudinal comparisons |
+| `GEMINI_MODEL_TIER` | No | Tier preference when `GEMINI_MODEL=auto`: `flash` (default), `pro`, `flash-lite` |
 | `API_KEY` | Production | X-API-Key auth on upload/pets/research endpoints (skipped if unset — local dev only) |
 | `DATA_DIR` | Production | Directory for the SQLite longitudinal DB (mount a Railway volume here; default `./data` is ephemeral) |
 
