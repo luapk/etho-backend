@@ -126,6 +126,42 @@ m = svc.summarize_metrics([mk(0, kps_face), mk(1, kps_back), mk(2, kps_face), mk
 check("face_visibility computed from keypoints", m["face_visibility"] == 0.5, m)
 check("GEMINI_MODEL env-configurable default", GEMINI_MODEL == os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"))
 
+# ── Evidence/overlay/series upgrades ──
+from app.prompts.ethological_prompt import ETHOLOGICAL_SYSTEM_PROMPT, PROMPT_VERSION
+from app.services import video_annotator, vet_report as vr
+
+check("prompt asks for evidence timestamps", "evidence_timestamp" in ETHOLOGICAL_SYSTEM_PROMPT)
+check("prompt version bumped", PROMPT_VERSION == "6.2", PROMPT_VERSION)
+check("draw threshold stricter than metrics", video_annotator.DRAW_CONF > 0.3)
+check("spine bands", video_annotator._spine_band(3) == "relaxed"
+      and video_annotator._spine_band(20) == "moderate"
+      and video_annotator._spine_band(40) == "severe")
+check("evidence extraction fails soft", video_annotator.extract_instrument_evidence(
+      "/nonexistent.mp4", {"items": [{"item": "x", "score": 1, "visible": True,
+                                      "evidence_timestamp": "0:03"}]}) == 0)
+
+# spine_series from bucketed per-second medians
+kps_none = None
+frames = []
+for i, (t, ang) in enumerate([(0.0, 10), (0.2, 12), (1.0, 30), (1.4, 34)]):
+    frames.append(PoseFrame(i, t, [AnimalPose(bbox=(0,0,5,5), confidence=0.9,
+        class_id=15, class_name="cat", keypoints=kps_none, spinal_angle=ang, head_tilt=None)]))
+series = svc.summarize_metrics(frames).get("spine_series")
+check("spine_series per-second medians", series == [
+      {"t_sec": 0, "deg": 11.0}, {"t_sec": 1, "deg": 32.0}], series)
+
+# quality_grade indexed + surfaced in history and vet report
+qpet = pet_store.create_pet({"name": "Q", "species": "cat", "breed": "Siamese"})
+pet_store.log_analysis(qpet["id"], {
+    "species": "cat",
+    "overall_assessment": {"distress_score": 20, "zone": "green"},
+    "capture_quality": {"grade": "fair"},
+}, media_type="video")
+qh = pet_store.get_history(qpet["id"])
+check("quality_grade stored + in history", qh[0]["quality_grade"] == "fair", qh[0])
+qmd = vr.render_markdown(vr.build_report(qpet["id"]))
+check("vet report has Quality column", "| Quality |" in qmd and "| fair " in qmd.replace("| fair |", "| fair "))
+
 # ── Storage detection & config status ──
 import importlib
 

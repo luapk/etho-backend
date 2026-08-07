@@ -183,7 +183,9 @@ CREATE INDEX IF NOT EXISTS idx_weights_pet_time
 _MIGRATIONS = [
     ("pets", "owner_id", "TEXT"),
     ("analyses", "owner_id", "TEXT"),
-    ("analyses", "context", "TEXT"),   # capture context tag, e.g. weekly_baseline
+    ("analyses", "context", "TEXT"),        # capture context tag, e.g. weekly_baseline
+    ("analyses", "quality_grade", "TEXT"),  # good|fair|poor — so trend views can
+                                            # de-emphasise low-quality observations
 ]
 
 
@@ -323,6 +325,7 @@ def log_analysis(pet_id, result: dict, media_type: str,
     pm = result.get("_pose_metrics", {}) or {}
     am = result.get("_audio_metrics", {}) or {}
     ins = result.get("instrument_scores", {}) or {}
+    cq = result.get("capture_quality", {}) or {}
     sc = pm.get("spinal_curvature", {}) or {}
     pitch = am.get("pitch", {}) or {}
     purr = am.get("solicitation_purr", {}) or {}
@@ -334,8 +337,9 @@ def log_analysis(pet_id, result: dict, media_type: str,
             "species_detected, breed_detected, urgency, instrument, instrument_total, "
             "instrument_max, instrument_scorable, spinal_mean_deg, spinal_max_deg, "
             "detection_coverage, vocal_event_count, pitch_mean_hz, purr_possible, "
-            "pipeline_version, prompt_version, model_used, full_json, owner_id, context) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "pipeline_version, prompt_version, model_used, full_json, owner_id, context, "
+            "quality_grade) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 analysis_id, pet_id, _utcnow(), media_type, source_filename,
                 file_size_bytes,
@@ -356,6 +360,7 @@ def log_analysis(pet_id, result: dict, media_type: str,
                 json.dumps(result),
                 owner_id,
                 context,
+                cq.get("grade"),
             ),
         )
     return analysis_id
@@ -366,7 +371,7 @@ def get_history(pet_id: str, limit: int = 200) -> list:
     full JSON blob — use get_analysis for a complete record."""
     with _lock, _connect() as conn:
         rows = conn.execute(
-            "SELECT id, created_at, media_type, context, source_filename, distress_score, zone, "
+            "SELECT id, created_at, media_type, context, quality_grade, source_filename, distress_score, zone, "
             "confidence, primary_state, species_detected, breed_detected, urgency, "
             "instrument, instrument_total, instrument_max, instrument_scorable, "
             "spinal_mean_deg, spinal_max_deg, detection_coverage, vocal_event_count, "

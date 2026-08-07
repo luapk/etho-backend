@@ -24,6 +24,7 @@ from .services import (
 from .services.video_annotator import (
     annotate_video,
     annotate_image,
+    extract_instrument_evidence,
     get_annotated_video_path,
     cleanup_old_videos,
     probe_video_meta,
@@ -351,6 +352,11 @@ async def upload_and_analyze(
                 print(f"  → Video ID: {video_id}")
             else:
                 print("  ⚠ Annotation failed (video still returned)")
+
+        # ── Step 4b: Instrument evidence stills ──────────────────────────
+        # One frame per scored instrument item, extracted at the timestamp
+        # the model says it scored from — provenance a vet can check.
+        extract_instrument_evidence(temp_path, result.get("instrument_scores"))
 
         # ── Step 5: Capture-quality feedback + longitudinal log ──────────
         result["capture_quality"] = capture_quality.assess(

@@ -275,11 +275,12 @@ def render_markdown(report: dict) -> str:
     add("## Observation Log")
     add("")
     add("AI-estimated columns: Distress, Zone, Instrument. "
-        "Measured columns: Spine, Vocal events, Pitch.")
+        "Measured columns: Spine, Vocal events, Pitch. Quality is the "
+        "technical capture grade — weigh fair/poor observations accordingly.")
     add("")
-    add("| Date (UTC) | Media | Distress | Zone | Instrument | Spine mean | "
+    add("| Date (UTC) | Media | Quality | Distress | Zone | Instrument | Spine mean | "
         "Vocal events | Pitch mean | State |")
-    add("|---|---|---|---|---|---|---|---|---|")
+    add("|---|---|---|---|---|---|---|---|---|---|")
     for h in report["observations"]:
         instrument = (f"{h['instrument_total']}/{int(h['instrument_max'])}"
                       if h.get("instrument_total") is not None
@@ -287,7 +288,7 @@ def render_markdown(report: dict) -> str:
         media = h.get("media_type") or "—"
         if h.get("context"):
             media = f"{media} ({h['context']})"
-        add(f"| {h['created_at']} | {media} "
+        add(f"| {h['created_at']} | {media} | {_fmt(h.get('quality_grade'))} "
             f"| {_fmt(h['distress_score'])} | {_fmt(h['zone'])} "
             f"| {instrument} | {_fmt(h['spinal_mean_deg'], '°')} "
             f"| {_fmt(h['vocal_event_count'])} | {_fmt(h['pitch_mean_hz'], ' Hz')} "

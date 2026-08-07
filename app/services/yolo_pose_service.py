@@ -232,6 +232,7 @@ class YoloPoseService:
         spinal_vals, tilt_vals = [], []
         frames_with_pet = 0
         frames_with_face = 0
+        spine_buckets: dict = {}   # int(second) -> [angles]
 
         for pf in pose_frames:
             if pf.animals:
@@ -239,6 +240,7 @@ class YoloPoseService:
                 for a in pf.animals:
                     if a.spinal_angle is not None:
                         spinal_vals.append(a.spinal_angle)
+                        spine_buckets.setdefault(int(pf.timestamp_sec), []).append(a.spinal_angle)
                     if a.head_tilt is not None:
                         tilt_vals.append(a.head_tilt)
                 # Face visible = nose + at least one eye confidently located
@@ -267,6 +269,14 @@ class YoloPoseService:
                 "max_deg": round(float(np.max(spinal_vals)), 1),
                 "interpretation": _interpret_spinal_angle(mean_s),
             }
+            # Per-second median series: the measured track a frontend can plot
+            # on the same time axis as the AI distress curve and audio events,
+            # so posture claims are visually corroborated. Median per bucket
+            # suppresses single-frame pose glitches; capped for payload size.
+            summary["spine_series"] = [
+                {"t_sec": t, "deg": round(float(np.median(vals)), 1)}
+                for t, vals in sorted(spine_buckets.items())
+            ][:300]
 
         if tilt_vals:
             summary["head_tilt"] = {

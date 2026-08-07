@@ -18,12 +18,21 @@ GET /api/video/annotated/{video_id} endpoint.  They are ephemeral: stored in
 import cv2
 import numpy as np
 import os
+import shutil
+import subprocess
 import uuid
 import time
+from collections import deque
 from typing import Optional
 
 ANNOTATED_VIDEO_DIR = "/tmp/etho_annotated"
 os.makedirs(ANNOTATED_VIDEO_DIR, exist_ok=True)
+
+# Keypoints are drawn at a stricter confidence than the one used for metrics
+# (0.3): a wrongly-placed skeleton drawn confidently costs more trust than a
+# missing one. Metrics keep the looser threshold because averages tolerate
+# noise; the overlay does not.
+DRAW_CONF = 0.5
 
 # BGR colours
 _GREEN  = (50, 205, 50)
@@ -57,30 +66,40 @@ def _ts_to_frame(ts, fps: float) -> int:
 
 
 # ── Drawing primitives ────────────────────────────────────────────────────────
+# All text/geometry scales with frame height so overlays stay legible from
+# 480p phone clips to 4K — fixed pixel sizes were unreadable on large frames.
+
+def _ui_scale(frame) -> float:
+    return max(0.6, frame.shape[0] / 720.0)
+
 
 def _bbox(frame, bbox, color, label: str):
+    u = _ui_scale(frame)
+    th_line = max(2, int(2 * u))
     x1, y1, x2, y2 = map(int, bbox)
-    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1)
-    cv2.rectangle(frame, (x1, y1 - th - 8), (x1 + tw + 6, y1), color, -1)
-    cv2.putText(frame, label, (x1 + 3, y1 - 4),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.52, _BLACK, 1, cv2.LINE_AA)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color, th_line)
+    fs = 0.52 * u
+    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)
+    cv2.rectangle(frame, (x1, y1 - th - int(8 * u)), (x1 + tw + int(6 * u), y1), color, -1)
+    cv2.putText(frame, label, (x1 + int(3 * u), y1 - int(4 * u)),
+                cv2.FONT_HERSHEY_SIMPLEX, fs, _BLACK, 1, cv2.LINE_AA)
 
 
 def _skeleton(frame, keypoints):
     if keypoints is None:
         return
+    u = _ui_scale(frame)
     for a, b in SKELETON_CONNECTIONS:
         if a >= len(keypoints) or b >= len(keypoints):
             continue
         ka, kb = keypoints[a], keypoints[b]
-        if ka[2] < 0.3 or kb[2] < 0.3:
+        if ka[2] < DRAW_CONF or kb[2] < DRAW_CONF:
             continue
         cv2.line(frame, (int(ka[0]), int(ka[1])), (int(kb[0]), int(kb[1])),
-                 _SKEL, 2, cv2.LINE_AA)
+                 _SKEL, max(2, int(2 * u)), cv2.LINE_AA)
     for kp in keypoints:
-        if kp[2] > 0.3:
-            cv2.circle(frame, (int(kp[0]), int(kp[1])), 4, _KP, -1)
+        if kp[2] > DRAW_CONF:
+            cv2.circle(frame, (int(kp[0]), int(kp[1])), max(3, int(4 * u)), _KP, -1)
 
 
 def _text_strip(frame, text: str, color: tuple, y_anchor: int, margin: int = 10):
@@ -88,9 +107,11 @@ def _text_strip(frame, text: str, color: tuple, y_anchor: int, margin: int = 10)
     if not text:
         return
     h, w = frame.shape[:2]
-    font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1
-    line_h = 18
-    pad = 6
+    u = _ui_scale(frame)
+    font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.48 * u, max(1, int(u))
+    line_h = int(18 * u)
+    pad = int(6 * u)
+    margin = int(margin * u)
 
     # Word-wrap
     words, lines, cur = text.split(), [], ""
@@ -114,28 +135,60 @@ def _text_strip(frame, text: str, color: tuple, y_anchor: int, margin: int = 10)
 
     for i, line in enumerate(lines):
         cv2.putText(frame, line,
-                    (margin + 5, y_anchor + pad + (i + 1) * line_h - 3),
+                    (margin + int(5 * u), y_anchor + pad + (i + 1) * line_h - int(3 * u)),
                     font, scale, _WHITE, thick, cv2.LINE_AA)
 
 
+_ZONE_LABELS = {"green": "LOW", "yellow": "MODERATE", "red": "ELEVATED"}
+
+
 def _distress_meter(frame, score: int, zone: str):
+    """Score bar with zone-boundary ticks, a text zone label (never color
+    alone), and an explicit AI-estimate tag — the bar must not borrow the
+    authority of the measured overlays around it."""
     h, w = frame.shape[:2]
-    bw, bh = 130, 14
-    x, y = w - bw - 10, h - bh - 10
+    u = _ui_scale(frame)
+    bw, bh = int(150 * u), int(14 * u)
+    x, y = w - bw - int(10 * u), h - bh - int(10 * u)
     cv2.rectangle(frame, (x, y), (x + bw, y + bh), (40, 40, 40), -1)
     fill = int(bw * score / 100)
     cv2.rectangle(frame, (x, y), (x + fill, y + bh), _zone_color(zone), -1)
     cv2.rectangle(frame, (x, y), (x + bw, y + bh), _WHITE, 1)
-    label = f"Distress {score}"
-    (lw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
-    cv2.putText(frame, label, (x + bw // 2 - lw // 2, y - 4),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.40, _WHITE, 1, cv2.LINE_AA)
+    # Zone boundary ticks at 33 and 66
+    for boundary in (33, 66):
+        tx = x + int(bw * boundary / 100)
+        cv2.line(frame, (tx, y - int(3 * u)), (tx, y + bh + int(3 * u)), _WHITE, 1)
+
+    label = f"Distress {score} - {_ZONE_LABELS.get(zone, zone).upper()}"
+    fs = 0.40 * u
+    (lw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)
+    cv2.putText(frame, label, (x + bw - lw, y - int(6 * u)),
+                cv2.FONT_HERSHEY_SIMPLEX, fs, _WHITE, 1, cv2.LINE_AA)
+    tag = "AI estimate"
+    fs2 = 0.32 * u
+    (tw2, _), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, fs2, 1)
+    cv2.putText(frame, tag, (x + bw - tw2, y + bh + int(12 * u)),
+                cv2.FONT_HERSHEY_SIMPLEX, fs2, (200, 200, 200), 1, cv2.LINE_AA)
+
+
+def _spine_band(deg: float) -> str:
+    if deg < 5:
+        return "relaxed"
+    elif deg < 15:
+        return "mild"
+    elif deg < 30:
+        return "moderate"
+    return "severe"
 
 
 def _spinal_readout(frame, angle: float):
+    """Rolling-mean spine angle with its interpretation band. The instantaneous
+    per-frame number flickered with pose noise, which read as unscientific."""
     h = frame.shape[0]
-    cv2.putText(frame, f"Spine {angle:.1f}deg",
-                (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.40, _WHITE, 1, cv2.LINE_AA)
+    u = _ui_scale(frame)
+    cv2.putText(frame, f"Spine {angle:.1f}deg ({_spine_band(angle)}) YOLO-measured",
+                (int(10 * u), h - int(10 * u)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.40 * u, _WHITE, 1, cv2.LINE_AA)
 
 
 # ── Lookup builders ───────────────────────────────────────────────────────────
@@ -206,8 +259,9 @@ def annotate_video(video_path: str, pose_frames: list, analysis: dict) -> Option
 
     video_id   = str(uuid.uuid4())
     out_path   = os.path.join(ANNOTATED_VIDEO_DIR, f"{video_id}.mp4")
+    raw_path   = os.path.join(ANNOTATED_VIDEO_DIR, f"{video_id}_raw.mp4")
     fourcc     = cv2.VideoWriter_fourcc(*"mp4v")
-    writer     = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
+    writer     = cv2.VideoWriter(raw_path, fourcc, fps, (width, height))
 
     breed    = analysis.get("breed_detected", "Pet")
     default_d = analysis.get("overall_assessment", {}).get("distress_score", 50)
@@ -221,6 +275,9 @@ def annotate_video(video_path: str, pose_frames: list, analysis: dict) -> Option
     cur_event_text = ""
     cur_pov_text   = ""
     cur_zone       = default_z
+    # ~1.5s rolling mean stabilises the on-screen spine number; the raw
+    # per-sample values still feed the stored metrics untouched.
+    spine_window = deque(maxlen=max(2, int(1.5 * 5)))
 
     frame_idx = 0
     try:
@@ -249,7 +306,9 @@ def annotate_video(video_path: str, pose_frames: list, analysis: dict) -> Option
                     _bbox(frame, animal.bbox, color, label)
                     _skeleton(frame, animal.keypoints)
                     if animal.spinal_angle is not None:
-                        _spinal_readout(frame, animal.spinal_angle)
+                        spine_window.append(animal.spinal_angle)
+                if spine_window:
+                    _spinal_readout(frame, sum(spine_window) / len(spine_window))
 
             # ── Text overlays ────────────────────────────────────────────────
             h = frame.shape[0]
@@ -268,8 +327,113 @@ def annotate_video(video_path: str, pose_frames: list, analysis: dict) -> Option
         cap.release()
         writer.release()
 
+    _finalize_annotated(video_path, raw_path, out_path)
     print(f"  ✓ Annotated video: {video_id} ({frame_idx} frames)")
     return video_id
+
+
+def _finalize_annotated(source_path: str, raw_path: str, out_path: str):
+    """Re-encode the raw mp4v render to H.264 and mux the ORIGINAL AUDIO back
+    in. OpenCV's writer produces a silent video-only file — unacceptable for
+    a behaviour tool whose analysis cites vocalizations. H.264 + faststart
+    also fixes mp4v playback on mobile Safari. Falls back to the silent mp4v
+    file if ffmpeg is unavailable or fails, so annotation never breaks."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        try:
+            cmd = [
+                ffmpeg, "-nostdin", "-y",
+                "-i", raw_path,          # annotated frames
+                "-i", source_path,       # original upload (audio source)
+                "-map", "0:v:0", "-map", "1:a:0?",   # audio optional
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac",
+                "-shortest", "-movflags", "+faststart",
+                out_path,
+            ]
+            proc = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.PIPE, timeout=600)
+            if proc.returncode == 0 and os.path.exists(out_path) \
+                    and os.path.getsize(out_path) > 1024:
+                os.unlink(raw_path)
+                print("  ✓ Annotated video finalized (H.264 + original audio)")
+                return
+            print(f"  ⚠ ffmpeg finalize failed (rc={proc.returncode}) — "
+                  f"serving silent mp4v fallback")
+        except Exception as e:
+            print(f"  ⚠ ffmpeg finalize error ({e}) — serving silent mp4v fallback")
+    else:
+        print("  ⚠ ffmpeg not found — annotated video will have no audio")
+    os.replace(raw_path, out_path)
+
+
+def extract_instrument_evidence(video_path: str, instrument_scores: dict) -> int:
+    """Save one evidence still per scored instrument item.
+
+    The FGS was validated on stills, so 'orbital_tightening: 1' should point
+    at the exact frame it was scored from — that provenance is what lets a
+    vet check the claim in two seconds. Each visible item with an
+    evidence_timestamp gets a JPEG (caption bar: item, score, timestamp)
+    stored in the annotated-media dir and referenced from the item as
+    evidence_media_id, served by GET /api/video/annotated/{id}.
+
+    Returns the number of stills written. Never raises — evidence is an
+    enhancement, not a dependency.
+    """
+    if not isinstance(instrument_scores, dict):
+        return 0
+    items = instrument_scores.get("items") or []
+    if not items:
+        return 0
+
+    written = 0
+    cap = None
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return 0
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        for item in items:
+            if not isinstance(item, dict) or item.get("visible") is False:
+                continue
+            ts = item.get("evidence_timestamp")
+            if ts is None or item.get("score") is None:
+                continue
+            fidx = min(max(_ts_to_frame(ts, fps), 0), max(total - 1, 0))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, fidx)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+
+            u = _ui_scale(frame)
+            h, w = frame.shape[:2]
+            bar_h = int(30 * u)
+            caption = (f"{item.get('item', 'item')}: "
+                       f"{item['score']:g}/{item.get('max', 2)}  @ {ts}  "
+                       f"(AI-scored from this frame)")
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0, h - bar_h), (w, h), _BLACK, -1)
+            cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, frame)
+            cv2.putText(frame, caption, (int(8 * u), h - int(10 * u)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5 * u, _WHITE,
+                        max(1, int(u)), cv2.LINE_AA)
+
+            media_id = str(uuid.uuid4())
+            out = os.path.join(ANNOTATED_VIDEO_DIR, f"{media_id}.jpg")
+            if cv2.imwrite(out, frame):
+                item["evidence_media_id"] = media_id
+                written += 1
+    except Exception as e:
+        print(f"  ⚠ Evidence frame extraction failed: {e}")
+    finally:
+        if cap is not None:
+            cap.release()
+    if written:
+        print(f"  ✓ Evidence stills: {written} instrument item(s)")
+    return written
 
 
 def probe_video_meta(video_path: str) -> dict:

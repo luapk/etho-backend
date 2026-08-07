@@ -44,7 +44,7 @@ Research foundations:
 
 # Bump when the prompt or output schema changes — logged with every stored
 # analysis so longitudinal records remain comparable across versions.
-PROMPT_VERSION = "6.1"
+PROMPT_VERSION = "6.2"
 
 ETHOLOGICAL_SYSTEM_PROMPT = """
 # ETHOLOGICAL AI ARCHITECT v6.0 — POSE-GROUNDED DEEP CONTEXTUAL ANALYSIS
@@ -442,7 +442,8 @@ If you observe:
         "instrument": "feline_grimace_scale (cats) OR canine_observable_stress_subset (dogs)",
         "items": [
             {"item": "item name", "score": 0, "max": 2, "visible": true,
-             "evidence": "what you observed that justifies this score"}
+             "evidence": "what you observed that justifies this score",
+             "evidence_timestamp": "0:07"}
         ],
         "total": 0,
         "max_total": 10,
@@ -481,6 +482,11 @@ items drawn from Glasgow CMPS-SF categories that can be scored at a distance):**
 Set instrument = "canine_observable_stress_subset", max_total = 10.
 The caveat field MUST state: "Observable subset — not a validated CMPS-SF
 administration (full scale requires hands-on interaction)."
+
+For EVERY scored item, set "evidence_timestamp" to the single clearest moment
+(m:ss) where that item is best assessable — the exact frame you scored from.
+This frame is extracted and shown to the guardian and vet as provenance, so
+point at a moment where the feature is genuinely visible. For images use "0:00".
 
 For images (single moment), score the instrument from that single frame.
 
