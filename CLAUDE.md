@@ -34,7 +34,18 @@ curl -X POST http://localhost:8000/api/video/upload \
 curl http://localhost:8000/api/video/annotated/{video_id} -o annotated.mp4
 ```
 
-There are no tests or linters configured. The app is deployed to Railway via Nixpacks — pushing to `main` deploys automatically.
+The app is deployed to Railway via Nixpacks — pushing to `main` deploys automatically.
+
+```bash
+# Run the test suites (stub google/cv2 — no AI deps or API keys needed)
+pip install -r requirements-dev.txt
+PYTHONPATH=. python tests/run_all.py
+
+# Seed two demo pets with weeks of history (timeline/trends/vet-report demo data)
+PYTHONPATH=. python scripts/seed_demo.py     # writes to $DATA_DIR (default ./data)
+```
+
+Test suites use throwaway `DATA_DIR`s and never touch the real database. `scripts/seed_demo.py` refuses to double-seed; delete the DB or point `DATA_DIR` elsewhere to reseed.
 
 ## Architecture
 

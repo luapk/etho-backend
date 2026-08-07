@@ -1,0 +1,5 @@
+httpx
+fastapi
+python-multipart
+scipy
+numpy
