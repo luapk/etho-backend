@@ -98,6 +98,34 @@ check("protocol endpoint open", r.status_code == 200)
 proto = r.json()["protocol"]
 check("protocol has contexts + rules", len(proto["contexts"]) == 4 and "video_baseline" in proto)
 
+# ── Face visibility (capture check + YOLO summary + model config) ──
+import numpy as np
+from app.services.yolo_pose_service import YoloPoseService, PoseFrame, AnimalPose
+from app.services.gemini_service import GEMINI_MODEL
+
+fv_ok = capture_quality.assess("video", {"detection_coverage": 0.9, "face_visibility": 0.8},
+                               {"audio_present": True},
+                               {"duration_sec": 45, "width": 1920, "height": 1080, "brightness": 120})
+check("face visible passes", any(c["check"] == "face_visibility" and c["status"] == "pass"
+                                 for c in fv_ok["checks"]))
+fv_low = capture_quality.assess("video", {"detection_coverage": 0.9, "face_visibility": 0.1},
+                                {"audio_present": True},
+                                {"duration_sec": 45, "width": 1920, "height": 1080, "brightness": 120})
+check("low face visibility warns with advice", fv_low["grade"] == "fair"
+      and any("front-on view" in a for a in fv_low["advice"]))
+check("no face check without pose data",
+      not any(c["check"] == "face_visibility"
+              for c in capture_quality.assess("video", {}, {}, {})["checks"]))
+
+svc = YoloPoseService.__new__(YoloPoseService)   # skip model loading
+kps_face = np.zeros((17, 3)); kps_face[0] = [10, 10, 0.9]; kps_face[1] = [12, 8, 0.9]
+kps_back = np.zeros((17, 3)); kps_back[5] = [10, 10, 0.9]; kps_back[6] = [14, 10, 0.9]
+mk = lambda i, kp: PoseFrame(i, i * 0.2, [AnimalPose(bbox=(0, 0, 5, 5), confidence=0.9,
+    class_id=15, class_name="cat", keypoints=kp, spinal_angle=10.0, head_tilt=2.0)])
+m = svc.summarize_metrics([mk(0, kps_face), mk(1, kps_back), mk(2, kps_face), mk(3, kps_back)])
+check("face_visibility computed from keypoints", m["face_visibility"] == 0.5, m)
+check("GEMINI_MODEL env-configurable default", GEMINI_MODEL == os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"))
+
 # ── Migration idempotence ──
 pet_store.init_db(); pet_store.init_db()
 check("init_db idempotent", True)

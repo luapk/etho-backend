@@ -231,6 +231,7 @@ class YoloPoseService:
         """
         spinal_vals, tilt_vals = [], []
         frames_with_pet = 0
+        frames_with_face = 0
 
         for pf in pose_frames:
             if pf.animals:
@@ -240,12 +241,24 @@ class YoloPoseService:
                         spinal_vals.append(a.spinal_angle)
                     if a.head_tilt is not None:
                         tilt_vals.append(a.head_tilt)
+                # Face visible = nose + at least one eye confidently located
+                # (COCO kp 0=nose, 1/2=eyes). Approximate on animals, but a
+                # reliable screen for "can facial items be scored at all".
+                if any(
+                    a.keypoints is not None
+                    and a.keypoints[0][2] > 0.3
+                    and (a.keypoints[1][2] > 0.3 or a.keypoints[2][2] > 0.3)
+                    for a in pf.animals
+                ):
+                    frames_with_face += 1
 
         total = max(len(pose_frames), 1)
         summary: dict = {
             "detection_coverage": round(frames_with_pet / total, 2),
             "frames_analyzed": len(pose_frames),
         }
+        if frames_with_pet:
+            summary["face_visibility"] = round(frames_with_face / frames_with_pet, 2)
 
         if spinal_vals:
             mean_s = float(np.mean(spinal_vals))

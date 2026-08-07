@@ -11,6 +11,12 @@ import re
 import google.generativeai as genai
 from ..prompts.ethological_prompt import ETHOLOGICAL_SYSTEM_PROMPT, PROMPT_VERSION
 
+# Model is configurable so upgrades are a config change, not a deploy of new
+# code. Every stored analysis is stamped with the model that produced it
+# (model_used column), so longitudinal records stay interpretable across
+# upgrades. Roll back by setting GEMINI_MODEL=gemini-2.0-flash.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+
 # Configure Gemini
 def get_gemini_client():
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -67,7 +73,7 @@ def run_scene_verification(video_file) -> dict:
     print(f"  → Pass 1: Scene verification...")
     
     model = genai.GenerativeModel(
-        model_name="gemini-2.0-flash",
+        model_name=GEMINI_MODEL,
         generation_config={
             "temperature": 0.1,  # Very low for factual accuracy
             "top_p": 0.95,
@@ -200,7 +206,7 @@ def analyze_video_with_context(video_file, scene_context: dict, pose_metrics: di
     print(f"  → Pass 2: Ethological analysis with verified context...")
     
     model = genai.GenerativeModel(
-        model_name="gemini-2.0-flash",
+        model_name=GEMINI_MODEL,
         generation_config={
             "temperature": 0.3,
             "top_p": 0.95,
@@ -232,6 +238,16 @@ def analyze_video_with_context(video_file, scene_context: dict, pose_metrics: di
         if "head_tilt" in pose_metrics:
             ht = pose_metrics["head_tilt"]
             pose_section += f"HEAD TILT: mean {ht['mean_deg']}°, max {ht['max_abs_deg']}°\n"
+        if "face_visibility" in pose_metrics:
+            fv = pose_metrics["face_visibility"]
+            pose_section += f"FACE VISIBILITY: {fv:.0%} of pet-visible frames\n"
+            if fv < 0.4:
+                pose_section += (
+                    "NOTE: The face is rarely visible in this footage. Score facial "
+                    "instrument items (grimace/FACS) ONLY from moments where the face "
+                    "is genuinely assessable — otherwise mark them visible=false. Do "
+                    "not infer facial signals from body posture.\n"
+                )
         pose_section += (
             "\nINTEGRATION RULE: When describing posture, write e.g. "
             "'shows 22° spinal curvature (YOLO-measured), consistent with submissive posture' "
@@ -536,7 +552,7 @@ def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = 
                 "error": True,
                 "error_type": "no_pet_detected",
                 "message": result.get("message", "No pet detected in video"),
-                "_model_used": "gemini-2.0-flash",
+                "_model_used": GEMINI_MODEL,
                 "_verified_scene": scene_context,
                 "_from_cache": False
             }
@@ -545,7 +561,7 @@ def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = 
         result = validate_and_enrich_response(result, scene_context)
         
         # Add metadata
-        result["_model_used"] = "gemini-2.0-flash"
+        result["_model_used"] = GEMINI_MODEL
         result["_from_cache"] = False
         result["_analysis_version"] = "etho-v17-longitudinal"
         result["_prompt_version"] = PROMPT_VERSION
@@ -574,7 +590,7 @@ def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = 
             "error": True,
             "error_type": "analysis_failed",
             "message": str(e),
-            "_model_used": "gemini-2.0-flash",
+            "_model_used": GEMINI_MODEL,
             "_from_cache": False
         }
     

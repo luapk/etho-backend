@@ -76,6 +76,7 @@ _COVERAGE_PASS, _COVERAGE_WARN = 0.8, 0.5
 _DURATION_MIN, _DURATION_IDEAL_LO, _DURATION_IDEAL_HI = 10, 20, 90
 _BRIGHT_PASS, _BRIGHT_WARN = 70, 40
 _MIN_DIMENSION = 480
+_FACE_PASS = 0.4   # face located in >= 40% of pet-visible frames
 
 
 def _check(name, status, measured, threshold, advice):
@@ -169,6 +170,20 @@ def assess(media_type: str, pose_metrics: dict = None,
             checks.append(_check("resolution", "warn", f"{w}x{h}",
                                  f"short side >= {_MIN_DIMENSION}px",
                                  "Low resolution limits keypoint and facial detail — use the main camera, not zoom."))
+
+    # ── Face visibility (facial-instrument scoreability, both media) ──
+    face = pose_metrics.get("face_visibility")
+    if face is not None and yolo_available:
+        if face >= _FACE_PASS:
+            checks.append(_check("face_visibility", "pass",
+                                 f"face located in {face:.0%} of pet-visible frames",
+                                 f">= {_FACE_PASS:.0%}", None))
+        else:
+            checks.append(_check("face_visibility", "warn",
+                                 f"face located in {face:.0%} of pet-visible frames",
+                                 f">= {_FACE_PASS:.0%}",
+                                 "Face rarely visible — grimace/facial items may not be scorable. "
+                                 "Include a clear front-on view of the face at least once."))
 
     # ── Pet visible at all? (image) ──
     if media_type == "image" and yolo_available:

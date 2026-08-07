@@ -15,7 +15,7 @@ import shutil
 import zipfile
 import io
 
-from .services.gemini_service import analyze_video
+from .services.gemini_service import analyze_video, GEMINI_MODEL
 from .services.yolo_pose_service import YoloPoseService
 from .services.audio_service import AudioService
 from .services import pet_store, vet_report, capture_quality, breed_reference
@@ -135,7 +135,7 @@ async def root():
         "status": "healthy",
         "service": "Etho API",
         "version": "17.1.0",
-        "engine": "gemini-2.0-flash + yolo11-pose",
+        "engine": f"{GEMINI_MODEL} + yolo11-pose",
         "pose_tracking": _yolo.available,
         "audio_analysis": _audio.available,
         "features": [
@@ -582,7 +582,7 @@ async def list_models():
     return {
         "models": [
             {
-                "id": "gemini-2.0-flash",
+                "id": GEMINI_MODEL,
                 "name": "Gemini 2.0 Flash",
                 "description": "Full video understanding with native multimodal processing",
                 "capabilities": [
@@ -598,7 +598,7 @@ async def list_models():
             "available": _yolo.available,
             "description": "Real-time keypoint detection for bounding boxes, skeleton overlay, and spinal angle measurement",
         },
-        "default": "gemini-2.0-flash",
+        "default": GEMINI_MODEL,
     }
 
 

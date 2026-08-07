@@ -98,7 +98,7 @@ Rules: cross-owner access returns **404, never 403** (don't confirm other guardi
 
 ### Capture protocol & quality feedback (v17.1)
 
-`capture_quality.py` holds the versioned capture protocol (`GET /api/capture-protocol`, public) and `assess()`, which attaches a `capture_quality` block to every analysis: framing (YOLO detection coverage), duration, audio presence, brightness, and resolution — each check reporting measured value + threshold + advice. Grades: good/fair/poor. **Quality is feedback, never a gate** — a poor incident clip is still analysed. Uploads accept `?context=weekly_baseline|incident|post_vet|other`, stored per record and shown in the vet report's observation log. Media probes live in `video_annotator.py` (`probe_video_meta`/`probe_image_meta`) and return `{}` on any failure.
+`capture_quality.py` holds the versioned capture protocol (`GET /api/capture-protocol`, public) and `assess()`, which attaches a `capture_quality` block to every analysis: framing (YOLO detection coverage), duration, audio presence, brightness, resolution, and face visibility (nose + eye keypoints from YOLO; low visibility warns that grimace/facial items may not be scorable, and the Pass 2 prompt tells Gemini to mark them `visible=false` rather than infer) — each check reporting measured value + threshold + advice. `scripts/repeatability_study.py` runs the test-retest consistency study (same clips × N runs, per-clip SD/CV verdicts) — run it after any model or prompt change. Grades: good/fair/poor. **Quality is feedback, never a gate** — a poor incident clip is still analysed. Uploads accept `?context=weekly_baseline|incident|post_vet|other`, stored per record and shown in the vet report's observation log. Media probes live in `video_annotator.py` (`probe_video_meta`/`probe_image_meta`) and return `{}` on any failure.
 
 Scientific-validity rules encoded in this layer:
 - **Measured vs AI-estimated are never mixed** — YOLO/DSP columns are labelled measured; distress/instrument scores are labelled AI-estimated, in both the DB layout and the vet report.
@@ -176,6 +176,7 @@ The prompt (`ethological_prompt.py`) encodes peer-reviewed frameworks that Gemin
 | Variable | Required | Purpose |
 |----------|----------|---------|
 | `GEMINI_API_KEY` | Yes | Google Gemini API access |
+| `GEMINI_MODEL` | No | Gemini model ID (default `gemini-2.5-flash`); every analysis row is stamped with the model that produced it, so upgrades don't corrupt longitudinal comparisons |
 | `API_KEY` | Production | X-API-Key auth on upload/pets/research endpoints (skipped if unset — local dev only) |
 | `DATA_DIR` | Production | Directory for the SQLite longitudinal DB (mount a Railway volume here; default `./data` is ephemeral) |
 
