@@ -49,7 +49,17 @@ GET   /api/pets/{id}/history            chronological indexed metrics (for timel
 GET   /api/pets/{id}/trends             baseline ± SD, latest deviation, slope (pts/week), red flags
 GET   /api/analyses/{id}                full stored raw result (provenance)
 GET   /api/pets/{id}/vet-report?format=markdown|json&reason=...   pre-consultation document
+GET   /api/pets/{id}/timeline           unified feed: analyses + weight entries, chronological;
+                                        each analysis carries its per-asset distress_curve
+                                        (sparkline-ready), zone, instrument total, quality grade,
+                                        context tag — built for a scrubbable timeline UI
+POST  /api/pets/{id}/weights            log a weight (syncs profile weight_kg, returns screening)
+GET   /api/pets/{id}/weights            weight log + breed-range assessment
 ```
+
+**Weight screening** (`breed_reference.py`): typical adult ranges for ~40 dog and ~16 cat breeds (substring-matched, species-level fallback for cats only — dog breeds vary too widely). Status below/within/above range with percent outside. Always framed as a rough screen: body condition score (BCS) by a vet is the clinical standard, and every output says so. The vet report gets a Weight section (latest vs range, delta over time, full log).
+
+**Per-asset temporal data**: every analysis's `timeline` array (per-timestamp distress/zone) is preserved in `full_json`; `get_timeline_feed()` extracts it as `distress_curve` ([{t_sec, distress_score, zone}]) so frontends render per-asset graphs without fetching full records.
 
 Storage is SQLite (stdlib, no new deps) at `$DATA_DIR/etho.db` (`pet_store.py`, default `./data`). **On Railway, mount a volume and set `DATA_DIR` to it — otherwise records are lost on redeploy.** Every analysis row stores the complete raw result JSON plus indexed metric columns, stamped with `pipeline_version` / `prompt_version` / `model_used` (bump `PROMPT_VERSION` in `ethological_prompt.py` when the prompt changes).
 

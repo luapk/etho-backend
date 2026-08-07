@@ -22,6 +22,7 @@ can print/export to PDF).
 from datetime import datetime, timezone
 
 from . import pet_store
+from .breed_reference import assess_weight
 
 DISCLAIMER = (
     "This is an AI-assisted observational summary generated from "
@@ -56,7 +57,8 @@ def _fmt(v, suffix=""):
 def _aggregate_markers(full_results: list) -> list:
     """Count recurring behavioural markers/FACS codes across all records."""
     counts: dict = {}
-    for created_at, result in full_results:
+    for rec in full_results:
+        created_at, result = rec["created_at"], rec["result"]
         seen_this_record = set()
         for m in result.get("behavioral_markers", []) or []:
             key = (m.get("code") or m.get("marker") or "").strip()
@@ -94,6 +96,22 @@ def build_report(pet_id: str, reason_for_visit: str = None) -> dict:
     full_results = pet_store.get_full_results(pet_id)
     markers = _aggregate_markers(full_results)
 
+    weights = pet_store.get_weights(pet_id)
+    weight_block = {
+        "entries": weights,
+        "assessment": assess_weight(pet.get("species"), pet.get("breed"),
+                                    pet.get("weight_kg")),
+    }
+    if len(weights) >= 2:
+        first, last = weights[0], weights[-1]
+        delta = round(last["weight_kg"] - first["weight_kg"], 2)
+        pct = round(delta / first["weight_kg"] * 100, 1) if first["weight_kg"] else None
+        weight_block["change"] = {
+            "from_kg": first["weight_kg"], "to_kg": last["weight_kg"],
+            "delta_kg": delta, "delta_percent": pct,
+            "from_date": first["recorded_at"], "to_date": last["recorded_at"],
+        }
+
     versions = sorted({
         (h.get("pipeline_version"), h.get("prompt_version"), h.get("model_used"))
         for h in history
@@ -118,6 +136,7 @@ def build_report(pet_id: str, reason_for_visit: str = None) -> dict:
             "observation_count": len(history),
         },
         "trends": trends,
+        "weight": weight_block,
         "observations": history,
         "recurring_markers": markers,
         "system_versions": [
@@ -143,6 +162,11 @@ def build_report(pet_id: str, reason_for_visit: str = None) -> dict:
                 "interpreted. Dogs: an OBSERVABLE SUBSET of Glasgow CMPS-SF "
                 "categories scored from video at a distance — explicitly not a "
                 "validated administration."
+            ),
+            "weight_screening": (
+                "Weight is compared against typical adult breed ranges "
+                "(sexes combined) as a rough screen only. Body condition "
+                "score (BCS) assessed hands-on remains the clinical standard."
             ),
             "baseline_math": (
                 "Baseline = mean +/- SD of all observations except the latest "
@@ -218,6 +242,36 @@ def render_markdown(report: dict) -> str:
             add(f"- `{f['created_at']}` — **{f['type']}**: {f['detail']}")
         add("")
 
+    wb = report.get("weight", {})
+    wa = wb.get("assessment", {})
+    if wb.get("entries") or wa.get("status") not in (None, "no_weight_recorded"):
+        add("## Weight")
+        add("")
+        if wa.get("reference_range_kg"):
+            lo, hi = wa["reference_range_kg"]
+            status = wa["status"].replace("_", " ")
+            outside = (f" ({wa['percent_outside_range']}% outside)"
+                       if wa.get("percent_outside_range") else "")
+            add(f"- **Latest**: {wa['weight_kg']} kg — **{status}**{outside} "
+                f"vs typical adult range {lo}-{hi} kg "
+                f"({wa.get('matched_breed') or wa.get('reference_source')}).")
+        elif wa.get("status") == "no_reference":
+            add(f"- **Latest**: {wa.get('weight_kg')} kg — no breed reference "
+                f"range available.")
+        if wb.get("change"):
+            c = wb["change"]
+            add(f"- **Change**: {c['delta_kg']:+} kg ({c['delta_percent']:+}%) "
+                f"from {c['from_date'][:10]} to {c['to_date'][:10]}.")
+        if wb.get("entries"):
+            add("")
+            add("| Date | Weight (kg) | Note |")
+            add("|---|---|---|")
+            for w in wb["entries"]:
+                add(f"| {w['recorded_at'][:10]} | {w['weight_kg']} | {w.get('note') or '—'} |")
+        add("")
+        add(f"> {wa.get('note', '')}")
+        add("")
+
     add("## Observation Log")
     add("")
     add("AI-estimated columns: Distress, Zone, Instrument. "
@@ -257,6 +311,7 @@ def render_markdown(report: dict) -> str:
     add(f"- **Measured metrics:** {meth['measured_metrics']}")
     add(f"- **AI-estimated metrics:** {meth['ai_estimated_metrics']}")
     add(f"- **Instruments:** {meth['instruments']}")
+    add(f"- **Weight screening:** {meth['weight_screening']}")
     add(f"- **Baseline math:** {meth['baseline_math']}")
     add("- **System versions used:** " + "; ".join(
         f"pipeline {v['pipeline'] or '?'} / prompt {v['prompt'] or '?'} / "

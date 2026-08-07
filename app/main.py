@@ -18,7 +18,7 @@ import io
 from .services.gemini_service import analyze_video
 from .services.yolo_pose_service import YoloPoseService
 from .services.audio_service import AudioService
-from .services import pet_store, vet_report, capture_quality
+from .services import pet_store, vet_report, capture_quality, breed_reference
 from .services.video_annotator import (
     annotate_video,
     annotate_image,
@@ -441,7 +441,13 @@ async def get_pets(auth: dict = Depends(get_auth)):
 
 @app.get("/api/pets/{pet_id}")
 async def get_pet(pet_id: str, auth: dict = Depends(get_auth)):
-    return {"success": True, "pet": _authorized_pet(pet_id, auth)}
+    pet = _authorized_pet(pet_id, auth)
+    return {
+        "success": True,
+        "pet": pet,
+        "weight_assessment": breed_reference.assess_weight(
+            pet.get("species"), pet.get("breed"), pet.get("weight_kg")),
+    }
 
 
 @app.patch("/api/pets/{pet_id}")
@@ -457,6 +463,51 @@ async def get_pet_history(pet_id: str, limit: int = Query(default=200, le=500),
     """Chronological indexed metrics for timeline/chart rendering."""
     _authorized_pet(pet_id, auth)
     return {"success": True, "history": pet_store.get_history(pet_id, limit=limit)}
+
+
+@app.get("/api/pets/{pet_id}/timeline")
+async def get_pet_timeline(pet_id: str, limit: int = Query(default=200, le=500),
+                           auth: dict = Depends(get_auth)):
+    """Unified chronological feed for a scrubbable timeline UI: analyses and
+    weight entries merged, each analysis carrying its own per-asset distress
+    curve (sparkline-ready), zone, instrument total, capture-quality grade,
+    and context tag — no per-item follow-up fetches needed."""
+    _authorized_pet(pet_id, auth)
+    return {"success": True, "timeline": pet_store.get_timeline_feed(pet_id, limit=limit)}
+
+
+class WeightCreate(BaseModel):
+    weight_kg: float
+    note: Optional[str] = None
+    recorded_at: Optional[str] = None   # ISO timestamp; defaults to now
+
+
+@app.post("/api/pets/{pet_id}/weights")
+async def add_pet_weight(pet_id: str, entry: WeightCreate,
+                         auth: dict = Depends(get_auth)):
+    """Log a weight measurement. Also updates the profile's current weight
+    and returns the fresh breed-range screening assessment."""
+    pet = _authorized_pet(pet_id, auth)
+    if not (0.05 <= entry.weight_kg <= 150):
+        raise HTTPException(status_code=400, detail="Implausible weight_kg")
+    saved = pet_store.add_weight(pet_id, entry.weight_kg, entry.note, entry.recorded_at)
+    return {
+        "success": True,
+        "weight": saved,
+        "weight_assessment": breed_reference.assess_weight(
+            pet.get("species"), pet.get("breed"), entry.weight_kg),
+    }
+
+
+@app.get("/api/pets/{pet_id}/weights")
+async def get_pet_weights(pet_id: str, auth: dict = Depends(get_auth)):
+    pet = _authorized_pet(pet_id, auth)
+    return {
+        "success": True,
+        "weights": pet_store.get_weights(pet_id),
+        "weight_assessment": breed_reference.assess_weight(
+            pet.get("species"), pet.get("breed"), pet.get("weight_kg")),
+    }
 
 
 @app.get("/api/pets/{pet_id}/trends")

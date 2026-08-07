@@ -96,6 +96,18 @@ CREATE TABLE IF NOT EXISTS owners (
     api_key_hash TEXT NOT NULL UNIQUE,   -- SHA-256 of the raw key; raw is never stored
     created_at   TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS weights (
+    id          TEXT PRIMARY KEY,
+    pet_id      TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    weight_kg   REAL NOT NULL,
+    note        TEXT,
+    FOREIGN KEY (pet_id) REFERENCES pets (id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_weights_pet_time
+    ON weights (pet_id, recorded_at);
 """
 
 # Columns added after the original v17 schema — applied idempotently on
@@ -298,15 +310,17 @@ def get_history(pet_id: str, limit: int = 200) -> list:
 
 
 def get_full_results(pet_id: str, limit: int = 200) -> list:
-    """(created_at, full result dict) pairs for a pet, oldest first. Used by
-    the vet-report builder to aggregate markers/FACS codes across records."""
+    """Full records for a pet, oldest first: dicts of {id, created_at,
+    context, result}. Used by the vet-report builder and the timeline feed."""
     with _lock, _connect() as conn:
         rows = conn.execute(
-            "SELECT created_at, full_json FROM analyses "
-            "WHERE pet_id = ? ORDER BY created_at LIMIT ?",
+            "SELECT id, created_at, context, full_json FROM analyses "
+            "WHERE pet_id = ? ORDER BY created_at, id LIMIT ?",
             (pet_id, limit),
         ).fetchall()
-    return [(r["created_at"], json.loads(r["full_json"])) for r in rows]
+    return [{"id": r["id"], "created_at": r["created_at"],
+             "context": r["context"], "result": json.loads(r["full_json"])}
+            for r in rows]
 
 
 def get_analysis(analysis_id: str):
@@ -317,6 +331,102 @@ def get_analysis(analysis_id: str):
     rec = dict(row)
     rec["full_json"] = json.loads(rec["full_json"])
     return rec
+
+
+# ── Weight log ───────────────────────────────────────────────────────────────
+
+def add_weight(pet_id: str, weight_kg: float, note: str = None,
+               recorded_at: str = None) -> dict:
+    """Append a weight entry and sync the profile's current weight_kg so the
+    signalment always shows the latest measurement."""
+    entry_id = str(uuid.uuid4())
+    when = recorded_at or _utcnow()
+    with _lock, _connect() as conn:
+        conn.execute(
+            "INSERT INTO weights (id, pet_id, recorded_at, weight_kg, note) "
+            "VALUES (?,?,?,?,?)",
+            (entry_id, pet_id, when, weight_kg, note),
+        )
+        conn.execute(
+            "UPDATE pets SET weight_kg = ?, updated_at = ? WHERE id = ?",
+            (weight_kg, _utcnow(), pet_id),
+        )
+    return {"id": entry_id, "pet_id": pet_id, "recorded_at": when,
+            "weight_kg": weight_kg, "note": note}
+
+
+def get_weights(pet_id: str) -> list:
+    with _lock, _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, recorded_at, weight_kg, note FROM weights "
+            "WHERE pet_id = ? ORDER BY recorded_at",
+            (pet_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Unified timeline feed ────────────────────────────────────────────────────
+
+def _ts_to_seconds(ts) -> float:
+    """Parse '0:05', '1:02:03', or a bare number into seconds."""
+    try:
+        if isinstance(ts, (int, float)):
+            return float(ts)
+        parts = [float(p) for p in str(ts).split(":")]
+        secs = 0.0
+        for p in parts:
+            secs = secs * 60 + p
+        return secs
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def get_timeline_feed(pet_id: str, limit: int = 200) -> list:
+    """One chronological feed merging analyses and weight entries, built for
+    a scrubbable timeline UI. Each analysis item carries its own per-asset
+    distress curve (extracted from the stored `timeline` array) so the
+    frontend can render inline sparklines without fetching full records."""
+    items = []
+
+    for rec in get_full_results(pet_id, limit=limit):
+        result = rec["result"]
+        oa = result.get("overall_assessment", {}) or {}
+        ins = result.get("instrument_scores", {}) or {}
+        cq = result.get("capture_quality", {}) or {}
+        curve = []
+        for ev in result.get("timeline", []) or []:
+            if isinstance(ev, dict) and ev.get("distress_score") is not None:
+                curve.append({
+                    "t_sec": _ts_to_seconds(ev.get("timestamp", 0)),
+                    "distress_score": ev.get("distress_score"),
+                    "zone": ev.get("zone"),
+                })
+        curve.sort(key=lambda p: p["t_sec"])
+        items.append({
+            "type": "analysis",
+            "date": rec["created_at"],
+            "analysis_id": rec["id"],
+            "media_type": result.get("_media_kind", "video"),
+            "context": rec["context"],
+            "distress_score": oa.get("distress_score"),
+            "zone": oa.get("zone"),
+            "primary_state": oa.get("primary_state"),
+            "instrument_total": ins.get("total"),
+            "instrument_max": ins.get("max_total"),
+            "quality_grade": cq.get("grade"),
+            "distress_curve": curve,
+        })
+
+    for w in get_weights(pet_id):
+        items.append({
+            "type": "weight",
+            "date": w["recorded_at"],
+            "weight_kg": w["weight_kg"],
+            "note": w["note"],
+        })
+
+    items.sort(key=lambda i: i["date"])
+    return items
 
 
 # ── Trends & baseline ────────────────────────────────────────────────────────
