@@ -155,11 +155,17 @@ def build_report(pet_id: str, reason_for_visit: str = None) -> dict:
         ],
         "methodology": {
             "measured_metrics": (
-                "Spinal curvature and head tilt are computed by YOLO11 pose "
-                "estimation (human COCO-17 keypoints applied to animals — "
-                "approximate, trend-useful). Pitch (F0), tonality (spectral "
-                "flatness) and 220-520 Hz purr-band energy are computed by "
-                "signal processing from the audio track."
+                "Pet detection and framing are computed by a YOLO11 detector. "
+                "Pitch (F0), tonality (spectral flatness) and 220-520 Hz "
+                "purr-band energy are computed by signal processing from the "
+                "audio track. Activity level, movement rhythm, tremor "
+                "(4-12 Hz) and postural sway are derived from frame-to-frame "
+                "motion. Skeletal pose estimation is NOT performed: the "
+                "available keypoint models are human-trained and fit human "
+                "anatomy to animals, so spinal-curvature and head-tilt "
+                "figures are deliberately not reported. Gait, stride and "
+                "weight-bearing symmetry are not measured at all — force "
+                "plates and pressure walkways remain the clinical standard."
             ),
             "ai_estimated_metrics": (
                 "Distress score (0-100, unvalidated screening estimate), zone, "
@@ -311,13 +317,18 @@ def render_markdown(report: dict) -> str:
 
     add("## Observation Log")
     add("")
-    add("AI-estimated columns: Distress, Zone, Instrument. "
-        "Measured columns: Spine, Vocal events, Pitch. Quality is the "
-        "technical capture grade — weigh fair/poor observations accordingly.")
+    show_spine = any(h.get("spinal_mean_deg") is not None
+                     for h in report["observations"])
+    measured_cols = ("Spine, " if show_spine else "") + "Vocal events, Pitch"
+    add(f"AI-estimated columns: Distress, Zone, Instrument. "
+        f"Measured columns: {measured_cols}. Quality is the technical capture "
+        f"grade — weigh fair/poor observations accordingly.")
     add("")
-    add("| Date (UTC) | Media | Quality | Distress | Zone | Instrument | Spine mean | "
-        "Vocal events | Pitch mean | State |")
-    add("|---|---|---|---|---|---|---|---|---|---|")
+    spine_h = "Spine mean | " if show_spine else ""
+    spine_sep = "---|" if show_spine else ""
+    add(f"| Date (UTC) | Media | Quality | Distress | Zone | Instrument | {spine_h}"
+        f"Vocal events | Pitch mean | State |")
+    add(f"|---|---|---|---|---|---|{spine_sep}---|---|---|")
     for h in report["observations"]:
         instrument = (f"{h['instrument_total']}/{int(h['instrument_max'])}"
                       if h.get("instrument_total") is not None
@@ -325,10 +336,11 @@ def render_markdown(report: dict) -> str:
         media = h.get("media_type") or "—"
         if h.get("context"):
             media = f"{media} ({h['context']})"
+        spine_c = f"{_fmt(h['spinal_mean_deg'], '°')} | " if show_spine else ""
         add(f"| {h['created_at']} | {media} | {_fmt(h.get('quality_grade'))} "
             f"| {_fmt(h['distress_score'])} | {_fmt(h['zone'])} "
-            f"| {instrument} | {_fmt(h['spinal_mean_deg'], '°')} "
-            f"| {_fmt(h['vocal_event_count'])} | {_fmt(h['pitch_mean_hz'], ' Hz')} "
+            f"| {instrument} | {spine_c}"
+            f"{_fmt(h['vocal_event_count'])} | {_fmt(h['pitch_mean_hz'], ' Hz')} "
             f"| {_fmt(h['primary_state'])} |")
     add("")
 
