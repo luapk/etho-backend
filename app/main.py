@@ -26,6 +26,7 @@ from .services.health_signals import HealthSignalService
 from .services import media_metadata
 from .services import (
     pet_store, vet_report, capture_quality, breed_reference, model_selector,
+    media_store,
 )
 from .services.video_annotator import (
     annotate_video,
@@ -218,11 +219,16 @@ def _log_startup_banner():
 def _log_to_history(pet_id, result: dict, media_type: str,
                     filename: str, size_bytes: int,
                     owner_id: str = None, context: str = None,
-                    observed_at: str = None, capture_time_source: str = None):
+                    observed_at: str = None, capture_time_source: str = None,
+                    source_path: str = None):
     """Persist a successful analysis to the pet's longitudinal record.
     pet_id may be None — the record is stored unassigned (but still
     owner-scoped). Pet ownership is validated by the endpoint BEFORE the
-    pipeline runs. Never lets a logging failure break the response."""
+    pipeline runs. Never lets a logging failure break the response.
+
+    Media is kept only for records that belong to a pet: an unassigned one-off
+    analysis has no timeline to appear in, so storing its clip would grow the
+    volume for something nothing ever reads."""
     try:
         analysis_id = pet_store.log_analysis(
             pet_id, result, media_type=media_type,
@@ -233,6 +239,15 @@ def _log_to_history(pet_id, result: dict, media_type: str,
         result["analysis_id"] = analysis_id
         result["pet_id"] = pet_id
         print(f"  → Logged analysis {analysis_id} (pet: {pet_id or 'unassigned'})")
+
+        if pet_id:
+            kept = media_store.save_for_analysis(
+                analysis_id, media_type,
+                annotated_path=get_annotated_video_path(result.get("annotated_video_id")),
+                original_path=source_path,
+            )
+            result["media_stored"] = kept
+            print(f"  → Kept media: clip={kept['media']} poster={kept['poster']}")
     except Exception as e:
         print(f"  ⚠ Failed to log analysis: {e}")
 
@@ -284,6 +299,7 @@ async def health_check():
         "yolo_available": _yolo.available,
         "audio_available": _audio.available,
         "storage": pet_store.storage_status(),
+        "media_library": media_store.storage_status(),
         "setup": status,
     }
 
@@ -438,7 +454,8 @@ async def upload_and_analyze(
         _log_to_history(pet_id, result, "video", file.filename, file_size,
                         owner_id=auth["owner_id"], context=context,
                         observed_at=cap["captured_at"],
-                        capture_time_source=cap["source"])
+                        capture_time_source=cap["source"],
+                        source_path=temp_path)
 
         return {"success": True, "data": result}
 
@@ -527,7 +544,8 @@ async def upload_and_analyze_image(
         _log_to_history(pet_id, result, "image", file.filename, file_size,
                         owner_id=auth["owner_id"], context=context,
                         observed_at=cap["captured_at"],
-                        capture_time_source=cap["source"])
+                        capture_time_source=cap["source"],
+                        source_path=temp_path)
 
         return {"success": True, "data": result}
 
@@ -659,7 +677,8 @@ def _process_batch(batch_id: str, staged: list, pet_id, owner_id, context, annot
             _log_to_history(pet_id, result, media_type, filename, size,
                             owner_id=owner_id, context=context,
                             observed_at=cap["captured_at"],
-                            capture_time_source=cap["source"])
+                            capture_time_source=cap["source"],
+                            source_path=path)
             item.update(
                 status="done",
                 analysis_id=result.get("analysis_id"),
@@ -824,7 +843,16 @@ async def get_pet_timeline(pet_id: str, limit: int = Query(default=200, le=500),
     curve (sparkline-ready), zone, instrument total, capture-quality grade,
     and context tag — no per-item follow-up fetches needed."""
     _authorized_pet(pet_id, auth)
-    return {"success": True, "timeline": pet_store.get_timeline_feed(pet_id, limit=limit)}
+    feed = pet_store.get_timeline_feed(pet_id, limit=limit)
+    # Whether a picture and a playable clip still exist is a filesystem fact,
+    # not a database one — eviction happens outside the DB — so it's resolved
+    # here rather than stored and allowed to go stale.
+    for item in feed:
+        if item.get("type") == "analysis":
+            aid = item.get("analysis_id")
+            item["has_poster"] = media_store.has_poster(aid)
+            item["has_media"] = media_store.has_media(aid)
+    return {"success": True, "timeline": feed}
 
 
 class WeightCreate(BaseModel):
@@ -869,15 +897,59 @@ async def get_pet_trends(pet_id: str, auth: dict = Depends(get_auth)):
     return {"success": True, "trends": pet_store.compute_trends(pet_id)}
 
 
-@app.get("/api/analyses/{analysis_id}")
-async def get_analysis(analysis_id: str, auth: dict = Depends(get_auth)):
-    """Full stored record (complete raw result JSON) for one analysis."""
+def _authorized_analysis(analysis_id: str, auth: dict) -> dict:
+    """Fetch an analysis the caller is allowed to see, else 404 — never 403,
+    so this can't be used to probe whether another guardian's record exists."""
     rec = pet_store.get_analysis(analysis_id)
     if not rec:
         raise HTTPException(status_code=404, detail="Analysis not found")
     if auth["role"] == "owner" and rec.get("owner_id") != auth["owner_id"]:
         raise HTTPException(status_code=404, detail="Analysis not found")
+    return rec
+
+
+@app.get("/api/analyses/{analysis_id}")
+async def get_analysis(analysis_id: str, auth: dict = Depends(get_auth)):
+    """Full stored record (complete raw result JSON) for one analysis."""
+    rec = _authorized_analysis(analysis_id, auth)
+    rec["has_poster"] = media_store.has_poster(analysis_id)
+    rec["has_media"] = media_store.has_media(analysis_id)
     return {"success": True, "analysis": rec}
+
+
+@app.get("/api/analyses/{analysis_id}/poster")
+async def get_analysis_poster(analysis_id: str, auth: dict = Depends(get_auth)):
+    """The timeline thumbnail for one analysis — a downscaled still cut from
+    the annotated media, so the detection box is visible on the tile."""
+    _authorized_analysis(analysis_id, auth)
+    path = media_store.poster_path(analysis_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="No poster stored for this analysis")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@app.get("/api/analyses/{analysis_id}/media")
+async def get_analysis_media(analysis_id: str, auth: dict = Depends(get_auth)):
+    """The stored annotated clip or photo for one analysis.
+
+    404 here is normal and expected on old records: clips are evicted
+    oldest-first once the library passes MEDIA_MAX_MB. The poster and the full
+    analysis survive, so the detail view stays useful without the video.
+    """
+    rec = _authorized_analysis(analysis_id, auth)
+    path = media_store.media_path(analysis_id)
+    if not path:
+        raise HTTPException(
+            status_code=404,
+            detail="The clip for this observation is no longer stored. "
+                   "The analysis and its thumbnail are still here.",
+        )
+    is_image = path.endswith(".jpg")
+    return FileResponse(
+        path,
+        media_type="image/jpeg" if is_image else "video/mp4",
+        filename=f"etho-{rec.get('created_at', '')[:10]}{'.jpg' if is_image else '.mp4'}",
+    )
 
 
 @app.get("/api/pets/{pet_id}/vet-report")

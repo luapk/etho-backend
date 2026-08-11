@@ -79,7 +79,9 @@ PATCH /api/pets/{id}                    update profile
 POST  /api/video/upload?pet_id=...      analysis is logged to that pet (pet_id optional everywhere)
 GET   /api/pets/{id}/history            chronological indexed metrics (for timeline/chart UI)
 GET   /api/pets/{id}/trends             baseline ± SD, latest deviation, slope (pts/week), red flags
-GET   /api/analyses/{id}                full stored raw result (provenance)
+GET   /api/analyses/{id}                full stored raw result (provenance) + has_poster/has_media
+GET   /api/analyses/{id}/poster         timeline thumbnail (JPEG, owner-scoped)
+GET   /api/analyses/{id}/media          stored annotated clip/photo (404 once evicted)
 GET   /api/pets/{id}/vet-report?format=markdown|json&reason=...   pre-consultation document
 GET   /api/pets/{id}/timeline           unified feed: analyses + weight entries, chronological;
                                         each analysis carries its per-asset distress_curve
@@ -96,6 +98,8 @@ GET   /api/pets/{id}/weights            weight log + breed-range assessment
 **Motion-derived health signals** (`health_signals.py`): activity level (lethargy screen), movement regularity, tremor (4–12 Hz band), and postural sway (balance screen) — all from whole-frame motion and the pet's bounding box, so no paw-level keypoints required. **Uses signed displacement, not frame-difference energy**: energy is rectified and would report double the true frequency. Explicitly does NOT measure per-limb lameness, stride length, footfall timing, or weight-bearing asymmetry — those need AP-10K/DeepLabCut-class pose, and force plates remain the clinical standard. The audio service additionally flags `cough_like` events (short, aperiodic, broadband) and counts them — heuristic, confirmed by Gemini.
 
 **Weight screening** (`breed_reference.py`): typical adult ranges for ~40 dog and ~16 cat breeds (substring-matched, species-level fallback for cats only — dog breeds vary too widely). Status below/within/above range with percent outside. Always framed as a rough screen: body condition score (BCS) by a vet is the clinical standard, and every output says so. The vet report gets a Weight section (latest vs range, delta over time, full log).
+
+**Every observation keeps its picture** (`media_store.py`): the timeline filmstrip shows a stored poster per capture, and tapping one reopens the complete analysis — the same screen the guardian saw on upload, rendered from the stored `full_json`, not a cut-down "history view" that would drift into a worse product. See *Annotated video storage* below for the retention rules.
 
 **Per-asset temporal data**: every analysis's `timeline` array (per-timestamp distress/zone) is preserved in `full_json`; `get_timeline_feed()` extracts it as `distress_curve` ([{t_sec, distress_score, zone}]) so frontends render per-asset graphs without fetching full records.
 
@@ -148,6 +152,7 @@ Scientific-validity rules encoded in this layer:
 | `app/services/pet_store.py` | SQLite pet profiles + analysis history, indexed metrics, baseline/trend/red-flag computation |
 | `app/services/vet_report.py` | Pre-consultation report builder (structured JSON + rendered Markdown) |
 | `app/services/video_annotator.py` | Frame-by-frame rendering of bounding boxes, skeleton, breed tag, distress meter, event/POV text strips |
+| `app/services/media_store.py` | Persistent media library under `$DATA_DIR/media` — posters + annotated clips, budget-capped eviction |
 | `app/prompts/ethological_prompt.py` | The entire Gemini system prompt — output schema, behavioural frameworks, FACS codes, morphological normalisation rules, YOLO integration guidance |
 
 ### Response shape (key fields)
@@ -198,7 +203,8 @@ The prompt (`ethological_prompt.py`) encodes peer-reviewed frameworks that Gemin
 | `API_KEY` | Production | X-API-Key auth on upload/pets/research endpoints (skipped if unset — local dev only) |
 | `ENABLE_POSE` | No | Set `1` ONLY with an animal-trained pose model in `YOLO_POSE_MODEL`. Off by default: human COCO-17 keypoints fit a human skeleton to pets and fabricated the spinal angle |
 | `YOLO_MODEL` | No | Detector weights (default `yolo11m.pt`). Measured detection rate on a real cat clip: nano 3%, small 34%, **medium 49%**, large 45%, xlarge 48%. Set `yolo11s.pt` to trade detection rate for latency |
-| `DATA_DIR` | Production | Directory for the SQLite longitudinal DB (mount a Railway volume here; default `./data` is ephemeral) |
+| `DATA_DIR` | Production | Directory for the SQLite longitudinal DB and the media library (mount a Railway volume here; default `./data` is ephemeral) |
+| `MEDIA_MAX_MB` | No | Size cap for stored annotated clips (default 2000). Past it, the oldest clips are evicted; posters are never evicted |
 
 ### System dependencies
 
@@ -210,6 +216,15 @@ Audio analysis requires the `ffmpeg` binary on PATH, installed at build time via
 
 Declaring the X11 libs in `aptPkgs` is kept only as a safety net; it is not sufficient on its own, because the Nix-based image doesn't reliably put apt libraries on the runtime library path.
 
-### Annotated video storage
+### Annotated video storage — two tiers
 
-Annotated videos are written to `/tmp/etho_annotated/{uuid}.mp4` using the `mp4v` codec (OpenCV default). They are ephemeral — each call to `POST /api/video/upload` triggers `cleanup_old_videos()` which deletes files older than 2 hours. On Railway, `/tmp` is cleared on restart. The codec is mp4v (MPEG-4 Part 2); most browsers play it natively inside a `.mp4` container.
+**Working copy (`/tmp/etho_annotated/{uuid}.mp4`).** What the annotator renders and what `GET /api/video/annotated/{video_id}` serves immediately after an upload. OpenCV writes raw `mp4v`, then `_finalize_annotated()` re-encodes to **H.264 + AAC + faststart** and muxes the original audio back in (OpenCV's writer is video-only, and mp4v doesn't play on mobile Safari); it falls back to the silent mp4v file if ffmpeg is missing. Ephemeral — every upload triggers `cleanup_old_videos()`, deleting anything over 2 hours old, and Railway clears `/tmp` on restart.
+
+**Record copy (`$DATA_DIR/media/`, `media_store.py`).** A timeline of scores with no pictures is a spreadsheet, so every analysis logged **against a pet** also keeps:
+
+- `{analysis_id}_poster.jpg` — 480px still cut 40% into the ANNOTATED media (so the detection box is visible on the tile, proving the tool found the pet), tens of KB.
+- `{analysis_id}.mp4|.jpg` — the annotated media itself, replayed by the detail view.
+
+Retention is asymmetric on purpose: **clips are evicted oldest-first past `MEDIA_MAX_MB` (default 2000); posters are never evicted.** A timeline that loses its pictures loses what makes it readable, whereas a clip that ages out costs nothing the record needs — the analysis JSON is the durable artefact. `GET /api/analyses/{id}/media` returning 404 is therefore a normal end state the UI handles, not an error. Unassigned one-off analyses store no media at all: with no timeline to appear in, nothing would ever read it.
+
+Both media endpoints are owner-scoped (404, never 403). Because `<img src>` and `<video src>` can't send `X-API-Key`, the frontend fetches them as blobs and uses object URLs rather than putting the key in a URL where it would land in server logs.

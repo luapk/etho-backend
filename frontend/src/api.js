@@ -131,3 +131,28 @@ export const getBatchStatus = (batchId) =>
 
 export const annotatedMediaUrl = (mediaId) =>
   `${API_URL}/api/video/annotated/${mediaId}`;
+
+// ── Stored media ─────────────────────────────────────────────────────────────
+/*
+ * Posters and clips are owner-scoped, so they need the X-API-Key header — and
+ * an <img src> or <video src> can't send one. Rather than put the key in a URL
+ * (where it would end up in server logs and browser history), each is fetched
+ * as a blob and handed to the element as an object URL.
+ *
+ * Callers own the returned URL and must revokeObjectURL it on unmount.
+ */
+
+const asObjectUrl = (path) =>
+  client.get(path, { responseType: 'blob' }).then((r) => URL.createObjectURL(r.data));
+
+/** Timeline thumbnail. Resolves null when none was stored. */
+export const fetchPoster = (analysisId) =>
+  asObjectUrl(`/api/analyses/${analysisId}/poster`).catch(() => null);
+
+/**
+ * The stored annotated clip/photo.
+ * Resolves null when it has been evicted — old records keep their analysis and
+ * poster but not always the video, and that's a normal state, not an error.
+ */
+export const fetchAnalysisMedia = (analysisId) =>
+  asObjectUrl(`/api/analyses/${analysisId}/media`).catch(() => null);

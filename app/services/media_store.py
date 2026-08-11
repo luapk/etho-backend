@@ -1,0 +1,271 @@
+"""
+Persistent media library for the longitudinal record.
+
+The analysis pipeline works on a temp file and throws it away, and annotated
+output lives in /tmp for two hours. That is fine for a one-shot analysis and
+useless for a record: a timeline of scores with no pictures is a spreadsheet,
+and a guardian scrolling back six months should see the clip that produced the
+number, not just the number.
+
+So each logged analysis keeps two artefacts under $DATA_DIR/media/ (the
+Railway volume, not /tmp):
+
+  {analysis_id}.mp4 | .jpg    the ANNOTATED media — detection box, distress
+                              meter, event captions. Playable in the detail
+                              view. This is the big one.
+  {analysis_id}_poster.jpg    a downscaled still for the timeline filmstrip,
+                              tens of KB.
+
+Two deliberate rules:
+
+  1. **Posters are never evicted.** They are small enough that thousands fit in
+     a few hundred MB, and a timeline that loses its pictures loses the thing
+     that makes it readable. Full media is evicted oldest-first once the
+     library passes MEDIA_MAX_MB, so a volume can't silently fill up and start
+     failing writes for the database sharing it.
+  2. **Nothing here is load-bearing.** Every function swallows its own errors
+     and reports absence. A missing poster degrades the timeline card to the
+     text it showed before; it never fails an analysis that already succeeded.
+
+The poster is cut from the ANNOTATED file on purpose: a thumbnail with the
+detection box drawn on it shows the guardian, at a glance, that the tool
+actually found their pet in that clip.
+"""
+
+import os
+import shutil
+from typing import Optional
+
+from . import pet_store
+
+# Full media beyond this is evicted oldest-first. Chosen to sit well under a
+# default Railway volume while leaving room for the database.
+DEFAULT_BUDGET_MB = 2000
+BUDGET_MB = int(os.environ.get("MEDIA_MAX_MB", DEFAULT_BUDGET_MB))
+
+# Longest edge of a poster. Big enough for a retina filmstrip tile, small
+# enough that a thousand of them is a rounding error on the volume.
+POSTER_MAX_EDGE = 480
+POSTER_QUALITY = 80
+
+# Fraction into the clip the poster frame is taken from. Not 0.0: the first
+# frame of a phone video is often a blurred hand-off as the camera settles.
+POSTER_SEEK = 0.4
+
+_VIDEO_EXT = ".mp4"
+_IMAGE_EXT = ".jpg"
+
+
+def media_root() -> str:
+    """The media directory, created on demand. Lives beside the database so a
+    single mounted volume covers both."""
+    root = os.path.join(pet_store.DATA_DIR, "media")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _safe(analysis_id: str) -> bool:
+    """IDs are UUID4s. Anything else is a path-traversal attempt."""
+    return bool(analysis_id) and analysis_id.replace("-", "").isalnum()
+
+
+def poster_path(analysis_id: str) -> Optional[str]:
+    """Path to the stored poster, or None if there isn't one."""
+    if not _safe(analysis_id):
+        return None
+    p = os.path.join(media_root(), f"{analysis_id}_poster.jpg")
+    return p if os.path.exists(p) else None
+
+
+def media_path(analysis_id: str) -> Optional[str]:
+    """Path to the stored annotated media, or None if it was never saved or
+    has since been evicted."""
+    if not _safe(analysis_id):
+        return None
+    for ext in (_VIDEO_EXT, _IMAGE_EXT):
+        p = os.path.join(media_root(), f"{analysis_id}{ext}")
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def has_poster(analysis_id: str) -> bool:
+    return poster_path(analysis_id) is not None
+
+
+def has_media(analysis_id: str) -> bool:
+    return media_path(analysis_id) is not None
+
+
+def _write_poster(source_path: str, dest_path: str, is_video: bool) -> bool:
+    """Downscale a frame of `source_path` into a JPEG poster."""
+    try:
+        import cv2
+    except Exception:
+        return False
+    try:
+        if is_video:
+            cap = cv2.VideoCapture(source_path)
+            if not cap.isOpened():
+                return False
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if total > 1:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(total * POSTER_SEEK))
+            ok, frame = cap.read()
+            if not ok:
+                # Seeking can fail on some containers — fall back to frame 0.
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                ok, frame = cap.read()
+            cap.release()
+            if not ok or frame is None:
+                return False
+        else:
+            frame = cv2.imread(source_path)
+            if frame is None:
+                return False
+
+        h, w = frame.shape[:2]
+        longest = max(h, w)
+        if longest > POSTER_MAX_EDGE:
+            scale = POSTER_MAX_EDGE / float(longest)
+            frame = cv2.resize(frame, (max(1, int(w * scale)), max(1, int(h * scale))),
+                               interpolation=cv2.INTER_AREA)
+        return bool(cv2.imwrite(dest_path, frame,
+                                [int(cv2.IMWRITE_JPEG_QUALITY), POSTER_QUALITY]))
+    except Exception:
+        return False
+
+
+def save_for_analysis(analysis_id: str, media_type: str,
+                      annotated_path: str = None,
+                      original_path: str = None) -> dict:
+    """Keep the annotated media and a poster for one logged analysis.
+
+    `annotated_path` is preferred for both; `original_path` is the fallback the
+    poster falls back to when annotation was skipped or failed, so a timeline
+    card still gets a picture even with annotate=false.
+
+    Returns {"media": bool, "poster": bool} — never raises.
+    """
+    saved = {"media": False, "poster": False}
+    if not _safe(analysis_id):
+        return saved
+
+    is_video = media_type == "video"
+    try:
+        root = media_root()
+
+        if annotated_path and os.path.exists(annotated_path):
+            ext = _VIDEO_EXT if is_video else _IMAGE_EXT
+            dest = os.path.join(root, f"{analysis_id}{ext}")
+            shutil.copyfile(annotated_path, dest)
+            saved["media"] = True
+
+        poster_source = annotated_path if saved["media"] else original_path
+        if poster_source and os.path.exists(poster_source):
+            saved["poster"] = _write_poster(
+                poster_source,
+                os.path.join(root, f"{analysis_id}_poster.jpg"),
+                is_video,
+            )
+    except Exception as e:
+        print(f"  ⚠ Could not store media for {analysis_id}: {e}")
+
+    enforce_budget()
+    return saved
+
+
+def library_bytes() -> int:
+    """Total size of stored full media (posters excluded — they are never
+    evicted, so they don't count against the eviction budget)."""
+    total = 0
+    try:
+        for name in os.listdir(media_root()):
+            if name.endswith("_poster.jpg"):
+                continue
+            try:
+                total += os.path.getsize(os.path.join(media_root(), name))
+            except OSError:
+                pass
+    except Exception:
+        pass
+    return total
+
+
+def enforce_budget(budget_mb: int = None) -> int:
+    """Delete the oldest full media until the library fits the budget.
+
+    Posters survive: the timeline keeps its pictures even after the playable
+    clip is gone, and the detail view says the clip has aged out rather than
+    showing a broken player. Returns the number of files removed.
+    """
+    limit = (budget_mb if budget_mb is not None else BUDGET_MB) * 1024 * 1024
+    if limit <= 0:
+        return 0
+    try:
+        root = media_root()
+        files = []
+        for name in os.listdir(root):
+            if name.endswith("_poster.jpg"):
+                continue
+            path = os.path.join(root, name)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            files.append((st.st_mtime, st.st_size, path))
+    except Exception:
+        return 0
+
+    total = sum(f[1] for f in files)
+    if total <= limit:
+        return 0
+
+    removed = 0
+    for _, size, path in sorted(files):        # oldest mtime first
+        if total <= limit:
+            break
+        try:
+            os.unlink(path)
+            total -= size
+            removed += 1
+        except OSError:
+            pass
+    if removed:
+        print(f"  → Media library over {limit // (1024*1024)}MB: evicted "
+              f"{removed} old clip(s), posters kept")
+    return removed
+
+
+def delete_for_analysis(analysis_id: str) -> None:
+    """Remove both artefacts for one analysis (used when a record is deleted)."""
+    for path in (media_path(analysis_id), poster_path(analysis_id)):
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+def storage_status() -> dict:
+    """Plain-English summary for /health."""
+    used = library_bytes()
+    posters = 0
+    clips = 0
+    try:
+        for name in os.listdir(media_root()):
+            if name.endswith("_poster.jpg"):
+                posters += 1
+            else:
+                clips += 1
+    except Exception:
+        pass
+    return {
+        "dir": media_root(),
+        "clips_stored": clips,
+        "posters_stored": posters,
+        "used_mb": round(used / (1024 * 1024), 1),
+        "budget_mb": BUDGET_MB,
+        "note": ("Annotated clips are evicted oldest-first past the budget; "
+                 "timeline posters are always kept."),
+    }

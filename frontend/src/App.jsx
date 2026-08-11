@@ -10,6 +10,7 @@ import Biometrics from './pages/Biometrics';
 import Pets from './pages/Pets';
 import Timeline from './pages/Timeline';
 import VetReport from './pages/VetReport';
+import AnalysisDetail from './pages/AnalysisDetail';
 
 const PASSWORD = 'etho2024';
 const ACTIVE_PET_KEY = 'etho.activePetId';
@@ -22,6 +23,9 @@ function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [analysisData, setAnalysisData] = useState(null);
   const [videoUrl, setVideoUrl] = useState(null);
+  const [mediaType, setMediaType] = useState(null);
+  // A past observation reopened from the timeline.
+  const [detailAnalysisId, setDetailAnalysisId] = useState(null);
 
   // The pet new captures are filed against. Remembered between visits so a
   // guardian isn't re-picking their pet on every upload.
@@ -46,10 +50,17 @@ function App() {
     }
   };
 
-  const handleAnalysisComplete = (data, url) => {
+  const handleAnalysisComplete = (data, url, kind) => {
     setAnalysisData(data);
     setVideoUrl(url);
+    setMediaType(kind || null);
     setCurrentPage('dashboard');
+  };
+
+  const openAnalysis = (analysisId) => {
+    if (!analysisId) return;
+    setDetailAnalysisId(analysisId);
+    navigateTo('analysis');
   };
 
   const navigateTo = (page) => {
@@ -233,6 +244,14 @@ function App() {
             petId={activePetId}
             onOpenVetReport={openVetReport}
             onUpload={() => navigateTo('landing')}
+            onOpenAnalysis={openAnalysis}
+          />
+        )}
+
+        {currentPage === 'analysis' && page('analysis',
+          <AnalysisDetail
+            analysisId={detailAnalysisId}
+            onBack={() => navigateTo('timeline')}
           />
         )}
 
@@ -244,6 +263,7 @@ function App() {
           <Dashboard
             analysisData={analysisData}
             videoUrl={videoUrl}
+            mediaType={mediaType}
             onViewTimeline={activePetId ? () => openTimeline(activePetId) : null}
           />
         )}

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Volume2, Eye, ChevronDown, ChevronUp, Download, AlertTriangle, MessageCircle, BookOpen, Subtitles, Lightbulb, Info, X, Sparkles, Volume1, VolumeX, CalendarRange, Camera, Ruler, Wind, Activity as ActivityIcon } from 'lucide-react';
+import { Volume2, Eye, ChevronDown, ChevronUp, Download, AlertTriangle, MessageCircle, BookOpen, Subtitles, Lightbulb, Info, X, Sparkles, Volume1, VolumeX, CalendarRange, Camera, Ruler, Wind, Activity as ActivityIcon, ChevronLeft } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
 import AudioWaveform from '../components/AudioWaveform';
 import Footer from '../components/Footer';
@@ -374,7 +374,7 @@ const MarkerInfoModal = ({ marker, onClose }) => {
   );
 };
 
-function Dashboard({ analysisData, videoUrl, onViewTimeline }) {
+function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, headerNote }) {
   const [expandedSections, setExpandedSections] = useState({ audio: true, interpret: true, didyouknow: true, research: false });
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -387,6 +387,13 @@ function Dashboard({ analysisData, videoUrl, onViewTimeline }) {
   const [selectedMarker, setSelectedMarker] = useState(null);
   const videoRef = useRef(null);
   const speechSynthRef = useRef(null);
+
+  // Photos are analysed as a single moment: no playback, no subtitles to sync.
+  // Fall back to the timeline length when the caller didn't say — a one-entry
+  // timeline is how the prompt represents a still.
+  const isStill = mediaType
+    ? mediaType === 'image'
+    : (analysisData?.timeline?.length === 1 && !analysisData?._audio_metrics?.audio_present);
 
   // Text-to-speech
   const speak = useCallback((text) => {
@@ -667,8 +674,21 @@ function Dashboard({ analysisData, videoUrl, onViewTimeline }) {
       <header className="py-6 px-6"><div className="max-w-5xl mx-auto flex flex-col items-center">
         <img src="/etho-logo.png" alt="Etho" className="h-10" onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }} />
         <span className="font-roboto font-bold text-3xl text-white hidden">Etho</span>
-        <p className="font-roboto text-white/60 text-sm mt-2">AI-powered pet behavior analysis</p>
+        <p className="font-roboto text-white/60 text-sm mt-2">
+          {headerNote || 'AI-powered pet behavior analysis'}
+        </p>
       </div></header>
+
+      {onBack && (
+        <div className="max-w-5xl mx-auto px-6 -mt-2 mb-2">
+          <button
+            onClick={onBack}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl glass-card hover:bg-white/25 text-white font-roboto font-medium transition-colors"
+          >
+            <ChevronLeft className="w-4 h-4" /> Back to timeline
+          </button>
+        </div>
+      )}
 
       <div className="max-w-5xl mx-auto px-6 pb-12 space-y-6">
         {/* Saved to a pet's record — the bridge to the longitudinal view */}
@@ -721,7 +741,13 @@ function Dashboard({ analysisData, videoUrl, onViewTimeline }) {
         {videoUrl && (
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl overflow-hidden">
             <div className="relative">
-              <video ref={videoRef} src={videoUrl} controls className="w-full" style={{ maxHeight: '450px', objectFit: 'contain', backgroundColor: 'rgba(0,0,0,0.3)' }} />
+              {/* A photo analysis has no track to scrub — a <video> tag would
+                  render a blank player, so stills get an <img>. */}
+              {isStill ? (
+                <img src={videoUrl} alt="The analysed photo" className="w-full" style={{ maxHeight: '450px', objectFit: 'contain', backgroundColor: 'rgba(0,0,0,0.3)' }} />
+              ) : (
+                <video ref={videoRef} src={videoUrl} controls className="w-full" style={{ maxHeight: '450px', objectFit: 'contain', backgroundColor: 'rgba(0,0,0,0.3)' }} />
+              )}
               
               {/* Enhanced subtitle - black bg, colored border, 30% bigger */}
               <AnimatePresence mode="wait">

@@ -65,6 +65,13 @@ function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline }) {
   const pet = pets?.find((p) => p.id === petId) || pets?.[0] || null;
   const petName = pet?.name || '';
 
+  // Falling back to the first pet locally isn't enough: the rest of the app
+  // (timeline nav, "see their record" links) keys off the active pet, so the
+  // fallback has to be promoted to a real selection.
+  useEffect(() => {
+    if (pet && pet.id !== petId) onChangePet?.(pet.id);
+  }, [pet?.id, petId]);
+
   // Poll a running batch until the backend says it's finished.
   useEffect(() => {
     if (!batch?.batch_id || batch.status === 'done') return undefined;
@@ -135,7 +142,10 @@ function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline }) {
         updatePet(pet.id, { species: data.data.species }).catch(() => {});
       }
       const mediaUrl = URL.createObjectURL(file);
-      setTimeout(() => onAnalysisComplete(data.data, mediaUrl), 500);
+      setTimeout(
+        () => onAnalysisComplete(data.data, mediaUrl, isImage(file) ? 'image' : 'video'),
+        500
+      );
     } catch (err) {
       clearInterval(stepInterval);
       setError(friendlyError(err));

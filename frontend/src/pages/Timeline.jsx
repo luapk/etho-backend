@@ -4,7 +4,7 @@ import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip,
          ReferenceArea, ReferenceLine } from 'recharts';
 import { AlertTriangle, FileText, Scale, Video, Image as ImageIcon,
          Wind, TrendingUp, TrendingDown, Minus, Plus } from 'lucide-react';
-import { getTimeline, getTrends, getPet, addWeight, friendlyError } from '../api';
+import { getTimeline, getTrends, getPet, addWeight, fetchPoster, friendlyError } from '../api';
 
 /*
  * The longitudinal view — the reason the record layer exists.
@@ -24,7 +24,6 @@ const ZONE = {
 const zoneOf = (s) => (s == null ? 'yellow' : s <= 33 ? 'green' : s <= 66 ? 'yellow' : 'red');
 const fmtDate = (iso) =>
   new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-const fmtTime = (s) => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
 
 /** Score is within 3 points of a zone boundary — say so rather than flip category. */
 const isBorderline = (s) =>
@@ -78,11 +77,55 @@ function Sparkline({ curve }) {
   );
 }
 
-export default function Timeline({ petId, onOpenVetReport, onUpload }) {
+/**
+ * The stored thumbnail for one capture.
+ *
+ * Fetched as a blob rather than set as an <img src> because posters are
+ * owner-scoped and need the API-key header. Falls back to a media-type icon
+ * when nothing was stored — records logged before media was kept, and clips
+ * whose poster couldn't be cut, still get a tile that reads correctly.
+ */
+function Poster({ analysisId, available, mediaType, zoneColor }) {
+  const [url, setUrl] = useState(null);
+
+  useEffect(() => {
+    if (!available) return undefined;
+    let objectUrl = null;
+    let cancelled = false;
+    fetchPoster(analysisId).then((u) => {
+      if (cancelled) {
+        if (u) URL.revokeObjectURL(u);
+        return;
+      }
+      objectUrl = u;
+      setUrl(u);
+    });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [analysisId, available]);
+
+  return (
+    <div className="relative w-full aspect-[4/3] bg-black/25 overflow-hidden">
+      {url ? (
+        <img src={url} alt="" className="w-full h-full object-cover" loading="lazy" />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center">
+          {mediaType === 'image'
+            ? <ImageIcon className="w-7 h-7 text-white/30" />
+            : <Video className="w-7 h-7 text-white/30" />}
+        </div>
+      )}
+      <div className="absolute inset-x-0 bottom-0 h-1.5" style={{ background: zoneColor }} />
+    </div>
+  );
+}
+
+export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnalysis }) {
   const [pet, setPet] = useState(null);
   const [items, setItems] = useState([]);
   const [trends, setTrends] = useState(null);
-  const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [weighing, setWeighing] = useState(false);
@@ -96,8 +139,6 @@ export default function Timeline({ petId, onOpenVetReport, onUpload }) {
         setPet(p.pet);
         setItems(tl);
         setTrends(tr);
-        const analyses = tl.filter((i) => i.type === 'analysis');
-        setSelected(analyses[analyses.length - 1] || null);
         setError(null);
       })
       .catch((e) => setError(friendlyError(e)))
@@ -325,17 +366,19 @@ export default function Timeline({ petId, onOpenVetReport, onUpload }) {
                       </div>
                     );
                   }
-                  const isSel = selected?.analysis_id === item.analysis_id;
                   const z = ZONE[item.zone] || ZONE.yellow;
                   return (
                     <button
                       key={item.analysis_id || idx}
-                      onClick={() => setSelected(item)}
-                      className={`flex-none w-52 glass-card rounded-2xl overflow-hidden text-left transition-all ${
-                        isSel ? 'ring-2 ring-white' : 'hover:bg-white/25'
-                      }`}
+                      onClick={() => onOpenAnalysis?.(item.analysis_id)}
+                      className="flex-none w-52 glass-card rounded-2xl overflow-hidden text-left transition-all hover:bg-white/25 focus:outline-none focus:ring-2 focus:ring-white"
                     >
-                      <div className="h-1.5" style={{ background: z.color }} />
+                      <Poster
+                        analysisId={item.analysis_id}
+                        available={item.has_poster}
+                        mediaType={item.media_type}
+                        zoneColor={z.color}
+                      />
                       <div className="p-3 space-y-2">
                         <div className="flex items-center justify-between gap-2">
                           <span className="font-roboto text-white/70 text-xs font-bold">
@@ -378,58 +421,6 @@ export default function Timeline({ petId, onOpenVetReport, onUpload }) {
                 })}
               </div>
             </div>
-
-            {/* Selected capture detail */}
-            {selected && (
-              <div className="glass-card rounded-2xl p-5">
-                <div className="flex items-baseline justify-between mb-1 flex-wrap gap-2">
-                  <h2 className="font-roboto font-bold text-white">
-                    {selected.media_type === 'image' ? 'Photo' : 'Clip'} from {fmtDate(selected.date)}
-                  </h2>
-                  <span className="font-roboto text-white/50 text-xs capitalize">
-                    {selected.primary_state}
-                  </span>
-                </div>
-                {selected.distress_curve?.length > 1 ? (
-                  <>
-                    <p className="font-roboto text-white/60 text-xs mb-3">
-                      How {pet?.name} was during this clip — scored at{' '}
-                      {selected.distress_curve.length} moments.
-                    </p>
-                    <div style={{ height: 150 }}>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart
-                          data={selected.distress_curve.map((p) => ({
-                            t: fmtTime(p.t_sec), score: p.distress_score,
-                          }))}
-                          margin={{ top: 8, right: 8, left: -24, bottom: 4 }}
-                        >
-                          <ReferenceArea y1={0} y2={33} fill="#22c55e" fillOpacity={0.10} />
-                          <ReferenceArea y1={33} y2={66} fill="#f59e0b" fillOpacity={0.10} />
-                          <ReferenceArea y1={66} y2={100} fill="#ef4444" fillOpacity={0.10} />
-                          <XAxis dataKey="t" stroke="rgba(255,255,255,0.5)" fontSize={11} tickLine={false} />
-                          <YAxis domain={[0, 100]} stroke="rgba(255,255,255,0.5)" fontSize={11} tickLine={false} />
-                          <Tooltip
-                            contentStyle={{
-                              background: 'rgba(15,23,42,0.92)', border: '1px solid rgba(255,255,255,0.2)',
-                              borderRadius: 10, color: 'white', fontSize: 12,
-                            }}
-                          />
-                          <Line
-                            type="stepAfter" dataKey="score" stroke="white" strokeWidth={2}
-                            strokeDasharray="4 3" dot={{ r: 4, fill: 'white' }}
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </>
-                ) : (
-                  <p className="font-roboto text-white/60 text-sm">
-                    A single moment — photos capture one instant rather than a sequence.
-                  </p>
-                )}
-              </div>
-            )}
 
             {/* Actions */}
             <div className="grid sm:grid-cols-2 gap-3">
