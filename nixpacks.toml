@@ -1,4 +1,32 @@
-# Install ffmpeg so the audio acoustic service can extract audio tracks.
-# aptPkgs is additive — it does not replace Nixpacks' auto-detected Python setup.
+# System packages. aptPkgs is additive — it does not replace Nixpacks'
+# auto-detected Python setup.
+#
+# ffmpeg      — audio extraction for the acoustic oracle, and the annotated
+#               video finalize pass (H.264 re-encode + audio remux)
+#
+# The remaining libraries exist because of an OpenCV packaging conflict:
+# `ultralytics` hard-requires `opencv-python` (the full desktop build), so pip
+# installs it alongside our `opencv-python-headless`, and the non-headless one
+# wins at import time. It links against X11/OpenGL shared objects that a slim
+# server image does not ship, so `import cv2` fails at startup with e.g.
+#     ImportError: libxcb.so.1: cannot open shared object file
+# Supplying the libraries is more robust than fighting pip's resolver: it works
+# whichever OpenCV build ends up importable, and survives ultralytics changing
+# its dependencies.
+#
+#   libgl1        libGL.so.1
+#   libglib2.0-0  libgthread-2.0.so.0
+#   libxcb1       libxcb.so.1        <- the one that broke the first deploy
+#   libsm6        libSM.so.6
+#   libxext6      libXext.so.6
+#   libxrender1   libXrender.so.1
 [phases.setup]
-aptPkgs = ["ffmpeg"]
+aptPkgs = [
+    "ffmpeg",
+    "libgl1",
+    "libglib2.0-0",
+    "libxcb1",
+    "libsm6",
+    "libxext6",
+    "libxrender1",
+]

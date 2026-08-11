@@ -202,7 +202,7 @@ The prompt (`ethological_prompt.py`) encodes peer-reviewed frameworks that Gemin
 
 ### System dependencies
 
-Audio analysis requires the `ffmpeg` binary on PATH. It is installed at build time via `nixpacks.toml` (`aptPkgs = ["ffmpeg"]`, additive to the auto-detected Python setup). Without it, `AudioService.available` is `False` and audio analysis is skipped — everything else still works. `scipy` (in `requirements.txt`) provides the DSP primitives.
+Audio analysis requires the `ffmpeg` binary on PATH, installed at build time via `nixpacks.toml` (additive to the auto-detected Python setup). That file also installs X11/OpenGL shared libraries (`libgl1`, `libglib2.0-0`, `libxcb1`, `libsm6`, `libxext6`, `libxrender1`) — **required, not optional**: `ultralytics` hard-requires the full `opencv-python`, which pip installs alongside our `opencv-python-headless` and which wins at import, and it links against libraries a slim server image doesn't ship. Without them the app crashes at startup with `ImportError: libxcb.so.1`. Without it, `AudioService.available` is `False` and audio analysis is skipped — everything else still works. `scipy` (in `requirements.txt`) provides the DSP primitives.
 
 ### Annotated video storage
 
