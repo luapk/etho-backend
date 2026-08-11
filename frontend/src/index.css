@@ -332,9 +332,14 @@ input:focus-visible {
   }
 }
 
-/* Prevent zoom on input focus (iOS) */
+/* Prevent zoom on input focus (iOS).
+ * Safari zooms the page when a focused input's font-size is under 16px, so
+ * small inputs are floored. This is a FLOOR, not a fixed size: inputs that are
+ * deliberately larger (the pet-name field) opt out with .keep-font-size — a
+ * bigger font never triggers the zoom, and the !important here would otherwise
+ * silently shrink them back to 16px on exactly the devices they matter on. */
 @media (max-width: 768px) {
-  input, select, textarea {
+  input:not(.keep-font-size), select, textarea {
     font-size: 16px !important;
   }
 }

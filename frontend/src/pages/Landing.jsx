@@ -1,178 +1,213 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Upload, Loader2, AlertCircle, Video, Circle, Square, Clock, Eye, Volume2, Brain, CheckCircle } from 'lucide-react';
+import { Upload, AlertCircle, Circle, Square, Eye, Volume2, Brain,
+         CheckCircle, ChevronDown, Check, X, Loader } from 'lucide-react';
 import Footer from '../components/Footer';
-import CaptureSetup from '../components/CaptureSetup';
-import { uploadMedia, friendlyError } from '../api';
+import { listPets, createPet, updatePet, uploadMedia, uploadBatch,
+         getBatchStatus, friendlyError } from '../api';
+
+/*
+ * One screen, one decision at a time.
+ *
+ * First visit asks a single question — the pet's name — and nothing else.
+ * Species is NOT asked: the analysis detects it, and we backfill the profile
+ * afterwards, so the guardian answers one question instead of two.
+ *
+ * After that it's just a drop zone. The same zone takes one file or thirty:
+ * pick several and it becomes a batch import automatically, rather than
+ * hiding bulk upload behind a separate page.
+ */
 
 const OPTIMAL_RECORD_DURATION = 30;
 const MAX_RECORD_DURATION = 45;
+const MAX_BATCH = 30;
+const POLL_MS = 3000;
 
-// Analysis steps for thinking UI
 const ANALYSIS_STEPS = [
-  { id: 'upload', label: 'Uploading video', icon: Upload },
-  { id: 'detect', label: 'Detecting pet', icon: Eye },
-  { id: 'visual', label: 'Analyzing visual cues', icon: Eye },
-  { id: 'audio', label: 'Processing vocalizations', icon: Volume2 },
-  { id: 'synthesis', label: 'Synthesizing findings', icon: Brain },
-  { id: 'complete', label: 'Analysis complete', icon: CheckCircle }
+  { id: 'upload', label: 'Uploading', icon: Upload },
+  { id: 'detect', label: 'Finding your pet', icon: Eye },
+  { id: 'visual', label: 'Reading body language', icon: Eye },
+  { id: 'audio', label: 'Listening to sounds', icon: Volume2 },
+  { id: 'synthesis', label: 'Putting it together', icon: Brain },
+  { id: 'complete', label: 'Done', icon: CheckCircle },
 ];
 
-function Landing({ onAnalysisComplete, petId, onChangePet, onAddPet, onBatch }) {
-  const [context, setContext] = useState('weekly_baseline');
+const isImage = (f) => (f.type || '').startsWith('image/');
+const isMedia = (f) => isImage(f) || (f.type || '').startsWith('video/');
+
+function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline }) {
+  const [pets, setPets] = useState(null);          // null while loading
+  const [nameInput, setNameInput] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [switching, setSwitching] = useState(false);
+
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [currentStep, setCurrentStep] = useState(0);
   const [error, setError] = useState(null);
-  const [selectedFile, setSelectedFile] = useState(null);
-  
+  const [asleep, setAsleep] = useState(false);
+  const [batch, setBatch] = useState(null);
+
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
-  const [showRecordOption, setShowRecordOption] = useState(false);
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
   const timerRef = useRef(null);
   const streamRef = useRef(null);
+  const fileRef = useRef(null);
+  const pollRef = useRef(null);
 
-  const handleDragOver = useCallback((e) => {
-    e.preventDefault();
-    setIsDragging(true);
+  useEffect(() => {
+    listPets().then(setPets).catch(() => setPets([]));
   }, []);
 
-  const handleDragLeave = useCallback((e) => {
-    e.preventDefault();
-    setIsDragging(false);
-  }, []);
+  const pet = pets?.find((p) => p.id === petId) || pets?.[0] || null;
+  const petName = pet?.name || '';
 
-  const handleDrop = useCallback((e) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file && (file.type.startsWith('video/') || file.type.startsWith('image/'))) {
-      processFile(file);
-    } else {
-      setError('Please drop a video or a photo');
-    }
-  }, [petId, context]);
+  // Poll a running batch until the backend says it's finished.
+  useEffect(() => {
+    if (!batch?.batch_id || batch.status === 'done') return undefined;
+    pollRef.current = setInterval(() => {
+      getBatchStatus(batch.batch_id)
+        .then((b) => { setBatch(b); if (b.status === 'done') clearInterval(pollRef.current); })
+        .catch(() => {});
+    }, POLL_MS);
+    return () => clearInterval(pollRef.current);
+  }, [batch?.batch_id, batch?.status]);
 
-  const handleFileSelect = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      processFile(file);
+  const nameSubmit = async (e) => {
+    e.preventDefault();
+    const name = nameInput.trim();
+    if (!name) return;
+    setCreating(true);
+    try {
+      // Species is left blank on purpose — the first analysis detects it and
+      // we fill it in below, so this stays a one-question sign-up.
+      const created = await createPet({ name });
+      setPets((prev) => [...(prev || []), { ...created, analysis_count: 0 }]);
+      onChangePet?.(created.id);
+      setNameInput('');
+    } catch (err) {
+      setError(friendlyError(err));
+    } finally {
+      setCreating(false);
     }
   };
 
-  // Simulate analysis steps for UX
   const simulateSteps = () => {
     let step = 0;
     const interval = setInterval(() => {
-      step++;
-      if (step < ANALYSIS_STEPS.length - 1) {
-        setCurrentStep(step);
-      } else {
-        clearInterval(interval);
-      }
+      step += 1;
+      if (step < ANALYSIS_STEPS.length - 1) setCurrentStep(step);
+      else clearInterval(interval);
     }, 1500);
     return interval;
   };
 
-  const processFile = async (file) => {
-    setSelectedFile(file);
+  const analyseOne = async (file) => {
     setError(null);
     setIsUploading(true);
     setUploadProgress(0);
     setCurrentStep(0);
-
-    // Start step simulation
     const stepInterval = simulateSteps();
-
     try {
-      // Photos and videos take different endpoints; the client picks by type.
-      // pet_id links this into the pet's record; context tags what kind of
-      // capture it is. Both are optional — a one-off analysis still works.
       const data = await uploadMedia(file, {
-        petId,
-        context: petId ? context : null,
-        onProgress: (progress) => {
-          setUploadProgress(progress);
-          if (progress === 100) setCurrentStep(1);
-        },
+        petId: pet?.id,
+        context: asleep ? 'sleeping_baseline' : null,
+        onProgress: (p) => { setUploadProgress(p); if (p === 100) setCurrentStep(1); },
       });
-
       clearInterval(stepInterval);
       setCurrentStep(ANALYSIS_STEPS.length - 1);
 
       if (data.data?.error && data.data?.error_type === 'no_pet_detected') {
-        setError(data.data.message || 'No pet detected');
+        setError(data.data.message || "We couldn't find a pet in that one.");
         setIsUploading(false);
         return;
       }
-
-      if (data.success) {
-        const mediaUrl = URL.createObjectURL(file);
-        setTimeout(() => onAnalysisComplete(data.data, mediaUrl), 500);
-      } else {
+      if (!data.success) {
         setError(data.error || 'Analysis failed. Please try again.');
+        setIsUploading(false);
+        return;
       }
+      // Backfill the species we never asked for.
+      if (pet && !pet.species && data.data?.species) {
+        updatePet(pet.id, { species: data.data.species }).catch(() => {});
+      }
+      const mediaUrl = URL.createObjectURL(file);
+      setTimeout(() => onAnalysisComplete(data.data, mediaUrl), 500);
     } catch (err) {
       clearInterval(stepInterval);
-      console.error('Upload error:', err);
+      setError(friendlyError(err));
+      setIsUploading(false);
+    }
+  };
+
+  const analyseMany = async (files) => {
+    setError(null);
+    setIsUploading(true);
+    setUploadProgress(0);
+    try {
+      const res = await uploadBatch(files, {
+        petId: pet?.id,
+        context: asleep ? 'sleeping_baseline' : null,
+        onProgress: setUploadProgress,
+      });
+      setBatch({
+        batch_id: res.batch_id, status: 'processing',
+        total: res.queued, completed: 0, failed: 0,
+        items: [], rejected: res.rejected || [],
+      });
+    } catch (err) {
       setError(friendlyError(err));
     } finally {
       setIsUploading(false);
     }
   };
 
+  const handleFiles = (fileList) => {
+    const files = Array.from(fileList || []).filter(isMedia).slice(0, MAX_BATCH);
+    if (!files.length) {
+      setError('Please choose a video or a photo.');
+      return;
+    }
+    if (files.length === 1) analyseOne(files[0]);
+    else analyseMany(files);
+  };
+
+  const onDrop = useCallback((e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    handleFiles(e.dataTransfer.files);
+  }, [pet?.id, asleep]);
+
+  // ── Recording ──────────────────────────────────────────────────────────────
   const startRecording = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: 'environment' }, 
-        audio: true 
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment' }, audio: true,
       });
-      
       streamRef.current = stream;
       chunksRef.current = [];
-      
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp9'
-      });
-      
-      mediaRecorderRef.current = mediaRecorder;
-      
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          chunksRef.current.push(e.data);
-        }
-      };
-      
-      mediaRecorder.onstop = () => {
+      const rec = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
+      mediaRecorderRef.current = rec;
+      rec.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      rec.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: 'video/webm' });
-        const file = new File([blob], `recording-${Date.now()}.webm`, { type: 'video/webm' });
-        processFile(file);
-        
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach(track => track.stop());
-        }
+        analyseOne(new File([blob], `recording-${Date.now()}.webm`, { type: 'video/webm' }));
+        streamRef.current?.getTracks().forEach((t) => t.stop());
       };
-      
-      mediaRecorder.start();
+      rec.start();
       setIsRecording(true);
       setRecordingTime(0);
-      
       timerRef.current = setInterval(() => {
-        setRecordingTime(prev => {
-          if (prev >= MAX_RECORD_DURATION - 1) {
-            stopRecording();
-            return prev;
-          }
+        setRecordingTime((prev) => {
+          if (prev >= MAX_RECORD_DURATION - 1) { stopRecording(); return prev; }
           return prev + 1;
         });
       }, 1000);
-      
-    } catch (err) {
-      console.error('Recording error:', err);
-      setError('Unable to access camera. Please check permissions or upload a video instead.');
+    } catch {
+      setError('Unable to use the camera. Check permissions, or upload a file instead.');
     }
   };
 
@@ -180,287 +215,291 @@ function Landing({ onAnalysisComplete, petId, onChangePet, onAddPet, onBatch }) 
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop();
       setIsRecording(false);
-      
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
+      if (timerRef.current) clearInterval(timerRef.current);
     }
   };
 
-  const formatTime = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
+  const fmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
+  if (pets === null) return <div className="min-h-screen" />;
+
+  // ── First visit: one question ──────────────────────────────────────────────
+  if (!pets.length) {
+    return (
+      <div className="min-h-screen flex flex-col">
+        <header className="py-10 px-6 text-center">
+          <img src="/etho-logo.png" alt="Etho" className="h-12 mx-auto drop-shadow-lg"
+               onError={(e) => { e.target.style.display = 'none'; }} />
+        </header>
+
+        <div className="flex-1 flex items-center justify-center px-6 pb-24">
+          <motion.form
+            initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
+            onSubmit={nameSubmit}
+            className="w-full max-w-2xl text-center"
+          >
+            <p className="font-roboto text-white/80 text-xl md:text-2xl mb-6">
+              Welcome. What's your pet's name?
+            </p>
+
+            <input
+              autoFocus
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              placeholder="Type their name"
+              className="keep-font-size w-full bg-transparent border-0 border-b-2 border-white/40
+                         focus:border-white text-white placeholder-white/30 font-roboto font-black
+                         text-center text-5xl md:text-7xl py-4 focus:outline-none transition-colors"
+            />
+
+            <AnimatePresence>
+              {nameInput.trim() && (
+                <motion.button
+                  initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                  type="submit" disabled={creating}
+                  className="mt-10 px-10 py-4 rounded-2xl bg-white/30 hover:bg-white/40 disabled:opacity-50
+                             text-white font-roboto font-bold text-lg transition-colors"
+                >
+                  {creating ? 'One moment…' : `Continue with ${nameInput.trim()}`}
+                </motion.button>
+              )}
+            </AnimatePresence>
+
+            {error && (
+              <p className="font-roboto text-red-200 text-sm mt-6">{error}</p>
+            )}
+          </motion.form>
+        </div>
+        <Footer />
+      </div>
+    );
+  }
+
+  // ── Batch in progress ──────────────────────────────────────────────────────
+  if (batch) {
+    const done = batch.status === 'done';
+    const pct = Math.round(((batch.completed + batch.failed) / Math.max(batch.total, 1)) * 100);
+    return (
+      <div className="min-h-screen flex flex-col">
+        <header className="py-8 px-6 text-center">
+          <img src="/etho-logo.png" alt="Etho" className="h-10 mx-auto drop-shadow-lg"
+               onError={(e) => { e.target.style.display = 'none'; }} />
+        </header>
+        <div className="flex-1 px-6 pb-16">
+          <div className="max-w-xl mx-auto glass-card rounded-2xl p-6">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-roboto font-bold text-white text-lg">
+                {done ? 'All done' : `Analysing ${petName}'s photos…`}
+              </h2>
+              <span className="font-roboto text-white/70 text-sm">
+                {batch.completed + batch.failed} / {batch.total}
+              </span>
+            </div>
+            <div className="w-full bg-white/15 rounded-full h-2 mb-4 overflow-hidden">
+              <motion.div className="h-full bg-white rounded-full"
+                          animate={{ width: `${pct}%` }} transition={{ duration: 0.4 }} />
+            </div>
+            {!done && (
+              <p className="font-roboto text-white/60 text-sm mb-4">
+                Each one is saved as it finishes — you can leave this page.
+              </p>
+            )}
+            <div className="space-y-1.5 max-h-72 overflow-y-auto scroll-container">
+              {batch.items?.map((it, i) => (
+                <div key={i} className="flex items-center gap-2 text-sm">
+                  {it.status === 'done' && <Check className="w-4 h-4 text-green-300 flex-none" />}
+                  {it.status === 'failed' && <X className="w-4 h-4 text-red-300 flex-none" />}
+                  {it.status === 'processing' && <Loader className="w-4 h-4 text-white/70 flex-none animate-spin" />}
+                  <span className="font-roboto text-white/80 truncate flex-1">{it.filename}</span>
+                  {it.observed_at && (
+                    <span className="font-roboto text-white/50 text-xs whitespace-nowrap">
+                      {new Date(it.observed_at).toLocaleDateString()}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            {done && (
+              <div className="flex gap-2 mt-5">
+                <button onClick={() => setBatch(null)}
+                        className="px-4 py-3 rounded-xl bg-white/15 hover:bg-white/25 text-white/85 font-roboto font-medium">
+                  Add more
+                </button>
+                <button onClick={() => onViewTimeline?.(pet?.id)}
+                        className="flex-1 py-3 rounded-xl bg-white/35 hover:bg-white/45 text-white font-roboto font-bold">
+                  See {petName}'s timeline
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+        <Footer />
+      </div>
+    );
+  }
+
+  // ── Main: drop zone ────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-gradient-to-br from-sky-400 via-blue-500 to-cyan-600 flex flex-col">
-      {/* Header */}
+    <div className="min-h-screen flex flex-col">
       <header className="py-8 px-6">
         <div className="max-w-xl mx-auto flex flex-col items-center">
-          <img 
-            src="/etho-logo.png" 
-            alt="Etho" 
-            className="h-12 mb-3 drop-shadow-lg" 
-            onError={(e) => {
-              e.target.style.display = 'none';
-              e.target.nextSibling.style.display = 'block';
-            }} 
-          />
-          <span className="font-roboto font-bold text-4xl text-white hidden drop-shadow-lg">Etho</span>
-          <p className="font-roboto text-white/80 text-center mt-2">
-            AI-powered pet behavior analysis
-          </p>
+          <img src="/etho-logo.png" alt="Etho" className="h-12 mb-3 drop-shadow-lg"
+               onError={(e) => { e.target.style.display = 'none'; }} />
+
+          {/* Whose clip this is — a quiet control, not a form */}
+          <button
+            onClick={() => setSwitching(!switching)}
+            className="flex items-center gap-1.5 font-roboto text-white/70 hover:text-white text-sm transition-colors"
+          >
+            {petName}
+            <ChevronDown className={`w-4 h-4 transition-transform ${switching ? 'rotate-180' : ''}`} />
+          </button>
+
+          <AnimatePresence>
+            {switching && (
+              <motion.div
+                initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }}
+                className="glass-card rounded-xl p-2 mt-2 flex flex-wrap gap-1.5 justify-center"
+              >
+                {pets.map((p) => (
+                  <button key={p.id}
+                    onClick={() => { onChangePet?.(p.id); setSwitching(false); }}
+                    className={`px-3 py-2 rounded-lg font-roboto text-sm transition-colors ${
+                      p.id === pet?.id ? 'bg-white/35 text-white' : 'bg-white/10 text-white/75 hover:bg-white/20'
+                    }`}>
+                    {p.name}
+                  </button>
+                ))}
+                <form onSubmit={nameSubmit} className="flex gap-1.5">
+                  <input value={nameInput} onChange={(e) => setNameInput(e.target.value)}
+                         placeholder="New pet"
+                         className="w-28 px-3 py-2 rounded-lg bg-white/10 border border-white/25 text-white placeholder-white/40 font-roboto text-sm focus:outline-none focus:border-white/60" />
+                  {nameInput.trim() && (
+                    <button type="submit" className="px-3 py-2 rounded-lg bg-white/30 text-white font-roboto text-sm font-bold">
+                      Add
+                    </button>
+                  )}
+                </form>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="flex-1 flex flex-col items-center justify-center px-6 pb-12">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="w-full max-w-xl"
-        >
-          {/* Recording View */}
+      <div className="flex-1 px-6 pb-12 flex items-center">
+        <div className="w-full max-w-xl mx-auto">
+          {error && (
+            <div className="glass-card rounded-2xl p-4 mb-4 border-2 border-amber-500/50 flex gap-3">
+              <AlertCircle className="w-5 h-5 text-amber-300 flex-none mt-0.5" />
+              <p className="font-roboto text-white/90 text-sm">{error}</p>
+            </div>
+          )}
+
           {isRecording ? (
             <div className="glass-card rounded-2xl p-8 text-center">
               <div className="relative inline-flex items-center justify-center mb-6">
                 <div className="w-24 h-24 rounded-full bg-red-500/30 flex items-center justify-center backdrop-blur-sm">
-                  <Circle className="w-8 h-8 text-red-400 animate-pulse" fill="currentColor" />
+                  <Circle className="w-10 h-10 text-red-400 fill-red-400 animate-pulse" />
                 </div>
                 <div className="absolute -bottom-2 bg-red-500 text-white px-3 py-1 rounded-full text-sm font-roboto font-medium">
-                  {formatTime(recordingTime)}
+                  {fmt(recordingTime)}
                 </div>
               </div>
-              
-              <p className="font-roboto text-white text-lg mb-2">Recording...</p>
-              <p className="font-roboto text-white/60 text-sm mb-6">
-                Optimal: {OPTIMAL_RECORD_DURATION}s • Max: {MAX_RECORD_DURATION}s
+              <p className="font-roboto text-white/80 mb-2">
+                {recordingTime < OPTIMAL_RECORD_DURATION
+                  ? `Keep going — ${OPTIMAL_RECORD_DURATION - recordingTime}s for a good read`
+                  : 'Plenty captured. Stop whenever you like.'}
               </p>
-              
-              <div className="w-full bg-white/10 rounded-full h-1 mb-6">
-                <div 
-                  className="h-full bg-red-400 rounded-full transition-all"
-                  style={{ width: `${(recordingTime / MAX_RECORD_DURATION) * 100}%` }}
-                />
+              <div className="w-full bg-white/10 rounded-full h-1 my-5">
+                <div className="bg-white h-1 rounded-full transition-all"
+                     style={{ width: `${(recordingTime / MAX_RECORD_DURATION) * 100}%` }} />
               </div>
-              
-              <button
-                onClick={stopRecording}
-                className="inline-flex items-center gap-2 px-6 py-3 bg-red-500 text-white rounded-full font-roboto font-medium hover:bg-red-600 transition-colors"
-              >
-                <Square className="w-5 h-5" fill="currentColor" />
-                Stop Recording
+              <button onClick={stopRecording}
+                      className="px-8 py-3 rounded-xl bg-white/30 hover:bg-white/40 text-white font-roboto font-bold inline-flex items-center gap-2">
+                <Square className="w-4 h-4 fill-white" /> Stop and analyse
               </button>
             </div>
           ) : isUploading ? (
-            /* Analysis Progress View */
             <div className="glass-card rounded-2xl p-8">
               <div className="text-center mb-8">
-                <Loader2 className="w-12 h-12 text-white mx-auto animate-spin mb-4" />
-                <p className="font-roboto text-white text-lg font-medium">
-                  Analyzing your video...
-                </p>
-                <p className="font-roboto text-white/60 text-sm mt-1">
-                  {selectedFile?.name}
+                <p className="font-roboto text-white/80">
+                  {uploadProgress < 100 ? `Uploading… ${uploadProgress}%` : `Looking at ${petName}`}
                 </p>
               </div>
-              
-              {/* Progress Steps */}
               <div className="space-y-3">
                 {ANALYSIS_STEPS.map((step, idx) => {
                   const Icon = step.icon;
-                  const isActive = idx === currentStep;
-                  const isComplete = idx < currentStep;
-                  
+                  const active = idx === currentStep;
+                  const done = idx < currentStep;
                   return (
-                    <motion.div
-                      key={step.id}
-                      initial={{ opacity: 0.5 }}
-                      animate={{ 
-                        opacity: isComplete || isActive ? 1 : 0.5,
-                        x: isActive ? 5 : 0
-                      }}
-                      className={`flex items-center gap-3 p-3 rounded-xl transition-colors ${
-                        isActive ? 'bg-white/20' : isComplete ? 'bg-white/10' : ''
-                      }`}
-                    >
+                    <div key={step.id} className={`flex items-center gap-3 transition-opacity ${
+                      active || done ? 'opacity-100' : 'opacity-30'}`}>
                       <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                        isComplete ? 'bg-green-500/30' : isActive ? 'bg-white/20' : 'bg-white/10'
-                      }`}>
-                        {isComplete ? (
-                          <CheckCircle className="w-4 h-4 text-green-400" />
-                        ) : (
-                          <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-white/50'}`} />
-                        )}
+                        done ? 'bg-white/30' : active ? 'bg-white/20 animate-pulse' : 'bg-white/10'}`}>
+                        {done ? <CheckCircle className="w-4 h-4 text-white" />
+                              : <Icon className="w-4 h-4 text-white" />}
                       </div>
-                      <span className={`font-roboto text-sm ${
-                        isActive ? 'text-white font-medium' : isComplete ? 'text-white/80' : 'text-white/50'
-                      }`}>
-                        {step.label}
-                      </span>
-                      {isActive && (
-                        <Loader2 className="w-4 h-4 text-white/60 animate-spin ml-auto" />
-                      )}
-                    </motion.div>
+                      <span className="font-roboto text-white/90">{step.label}</span>
+                    </div>
                   );
                 })}
               </div>
             </div>
           ) : (
             <>
-              {/* Who is this of, and what kind of capture */}
-              <CaptureSetup
-                petId={petId}
-                context={context}
-                onChangePet={onChangePet}
-                onChangeContext={setContext}
-                onAddPet={onAddPet}
-              />
-
-              {/* Upload Area */}
+              {/* The one thing to do on this screen */}
               <div
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                className={`
-                  glass-card rounded-2xl p-12 transition-all duration-300 cursor-pointer
-                  ${isDragging ? 'ring-2 ring-white bg-white/30' : 'hover:bg-white/20'}
-                `}
+                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
+                onDrop={onDrop}
+                onClick={() => fileRef.current?.click()}
+                className={`glass-card rounded-2xl p-12 text-center cursor-pointer transition-all ${
+                  isDragging ? 'ring-2 ring-white bg-white/30' : 'hover:bg-white/25'
+                }`}
               >
                 <input
+                  ref={fileRef}
                   type="file"
+                  multiple
                   accept="video/*,image/jpeg,image/png,image/webp"
-                  onChange={handleFileSelect}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  onChange={(e) => handleFiles(e.target.files)}
+                  className="hidden"
                 />
-
-                <div className="text-center">
-                  <Upload className={`w-12 h-12 mx-auto mb-4 ${
-                    isDragging ? 'text-white' : 'text-white/70'
-                  }`} strokeWidth={1.5} />
-                  <p className="font-roboto text-white text-lg font-medium mb-2">
-                    Drop a video or photo here
-                  </p>
-                  <p className="font-roboto text-white/60 text-sm">
-                    or click to browse • video or photo
-                  </p>
-                </div>
+                <Upload className="w-12 h-12 mx-auto mb-4 text-white/70" strokeWidth={1.5} />
+                <p className="font-roboto text-white text-xl font-bold mb-2">
+                  Drop a video or photo of {petName} here
+                </p>
+                <p className="font-roboto text-white/60 text-sm">
+                  or tap to choose — pick as many as you like
+                </p>
               </div>
 
-              {/* Bulk import */}
-              <button
-                onClick={onBatch}
-                className="w-full mt-3 py-3 rounded-xl glass-card hover:bg-white/25 text-white/85 font-roboto text-sm font-medium transition-colors"
-              >
-                Got photos and clips already? Import several at once →
-              </button>
+              {/* One line of guidance, not a manual */}
+              <p className="font-roboto text-white/55 text-sm text-center mt-4">
+                Film {petName} in good light, in focus, with their whole body in
+                frame. 30 seconds is plenty.
+              </p>
 
-              {/* Record Option */}
-              <div className="mt-6 text-center">
-                <button
-                  onClick={() => setShowRecordOption(!showRecordOption)}
-                  className="font-roboto text-white/70 text-sm hover:text-white transition-colors"
-                >
-                  Or record directly from your device →
+              {/* The only option, and only because it unlocks a measurement */}
+              <label className="mt-5 mx-auto flex w-fit max-w-xs items-start gap-2.5 cursor-pointer">
+                <input type="checkbox" checked={asleep}
+                       onChange={(e) => setAsleep(e.target.checked)}
+                       className="w-4 h-4 mt-0.5 flex-none rounded accent-white" />
+                <span className="font-roboto text-white/60 text-sm text-left">
+                  {petName} is asleep in this — measure their breathing rate
+                </span>
+              </label>
+
+              <div className="mt-8 text-center">
+                <button onClick={startRecording}
+                        className="font-roboto text-white/70 hover:text-white text-sm transition-colors">
+                  Or film {petName} right now →
                 </button>
-                
-                <AnimatePresence>
-                  {showRecordOption && (
-                    <motion.div
-                      initial={{ opacity: 0, y: -10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -10 }}
-                      className="glass-card mt-4 p-5 rounded-xl"
-                    >
-                      <div className="flex items-center justify-center gap-2 text-white/80 text-sm mb-4">
-                        <Clock className="w-4 h-4" />
-                        <span className="font-roboto">Optimal: {OPTIMAL_RECORD_DURATION} seconds</span>
-                      </div>
-                      <button
-                        onClick={startRecording}
-                        className="inline-flex items-center gap-2 px-5 py-2.5 bg-white/20 hover:bg-white/30 text-white rounded-full font-roboto font-medium transition-colors backdrop-blur-sm border border-white/30"
-                      >
-                        <Video className="w-5 h-5" />
-                        Start Recording
-                      </button>
-                      <p className="font-roboto text-white/50 text-xs mt-3">
-                        Requires camera and microphone permission
-                      </p>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
               </div>
             </>
           )}
-
-          {/* Error Message */}
-          <AnimatePresence>
-            {error && (
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 10 }}
-                className="mt-4 p-4 rounded-xl flex items-start gap-3"
-                style={{ backgroundColor: 'rgba(239, 68, 68, 0.2)', backdropFilter: 'blur(12px)' }}
-              >
-                <AlertCircle className="w-5 h-5 text-red-300 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="font-roboto text-white text-sm">{error}</p>
-                  <button
-                    onClick={() => setError(null)}
-                    className="font-roboto text-red-300 text-xs mt-2 hover:text-red-200"
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </motion.div>
-
-        {/* Features */}
-        {!isUploading && !isRecording && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.3 }}
-            className="mt-16 grid grid-cols-3 gap-8 max-w-2xl"
-          >
-            <div className="text-center">
-              <div className="w-12 h-12 glass-card rounded-full flex items-center justify-center mx-auto mb-3">
-                <span className="text-xl">📚</span>
-              </div>
-              <h3 className="font-roboto font-bold text-white text-sm mb-1">Research-Backed</h3>
-              <p className="font-roboto text-white/60 text-xs">
-                DogFACS, FGS & bio-acoustics
-              </p>
-            </div>
-            
-            <div className="text-center">
-              <div className="w-12 h-12 glass-card rounded-full flex items-center justify-center mx-auto mb-3">
-                <span className="text-xl">👁️</span>
-              </div>
-              <h3 className="font-roboto font-bold text-white text-sm mb-1">Visual + Audio</h3>
-              <p className="font-roboto text-white/60 text-xs">
-                Expression & vocalization analysis
-              </p>
-            </div>
-            
-            <div className="text-center">
-              <div className="w-12 h-12 glass-card rounded-full flex items-center justify-center mx-auto mb-3">
-                <span className="text-xl">💡</span>
-              </div>
-              <h3 className="font-roboto font-bold text-white text-sm mb-1">Actionable</h3>
-              <p className="font-roboto text-white/60 text-xs">
-                Practical recommendations
-              </p>
-            </div>
-          </motion.div>
-        )}
-      </main>
-
-      {/* Footer */}
+        </div>
+      </div>
       <Footer />
     </div>
   );

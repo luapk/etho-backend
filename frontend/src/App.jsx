@@ -10,7 +10,6 @@ import Biometrics from './pages/Biometrics';
 import Pets from './pages/Pets';
 import Timeline from './pages/Timeline';
 import VetReport from './pages/VetReport';
-import BatchImport from './pages/BatchImport';
 
 const PASSWORD = 'etho2024';
 const ACTIVE_PET_KEY = 'etho.activePetId';
@@ -217,8 +216,7 @@ function App() {
             onAnalysisComplete={handleAnalysisComplete}
             petId={activePetId}
             onChangePet={setActivePetId}
-            onAddPet={() => navigateTo('pets')}
-            onBatch={() => navigateTo('batch')}
+            onViewTimeline={openTimeline}
           />
         )}
 
@@ -240,16 +238,6 @@ function App() {
 
         {currentPage === 'vetreport' && page('vetreport',
           <VetReport petId={reportPetId} onBack={() => navigateTo('timeline')} />
-        )}
-
-        {currentPage === 'batch' && page('batch',
-          <BatchImport
-            petId={activePetId}
-            onChangePet={setActivePetId}
-            onAddPet={() => navigateTo('pets')}
-            onDone={() => navigateTo('landing')}
-            onViewTimeline={openTimeline}
-          />
         )}
 
         {currentPage === 'dashboard' && page('dashboard',
