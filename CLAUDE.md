@@ -202,7 +202,13 @@ The prompt (`ethological_prompt.py`) encodes peer-reviewed frameworks that Gemin
 
 ### System dependencies
 
-Audio analysis requires the `ffmpeg` binary on PATH, installed at build time via `nixpacks.toml` (additive to the auto-detected Python setup). That file also installs X11/OpenGL shared libraries (`libgl1`, `libglib2.0-0`, `libxcb1`, `libsm6`, `libxext6`, `libxrender1`) — **required, not optional**: `ultralytics` hard-requires the full `opencv-python`, which pip installs alongside our `opencv-python-headless` and which wins at import, and it links against libraries a slim server image doesn't ship. Without them the app crashes at startup with `ImportError: libxcb.so.1`. Without it, `AudioService.available` is `False` and audio analysis is skipped — everything else still works. `scipy` (in `requirements.txt`) provides the DSP primitives.
+Audio analysis requires the `ffmpeg` binary on PATH, installed at build time via `nixpacks.toml`.
+
+**The OpenCV conflict — do not undo this.** `ultralytics` hard-requires `opencv-python` (the full desktop build), so pip installs it alongside our `opencv-python-headless`, both write to the same `cv2/` directory, and the desktop build wins at import. It links against X11/OpenGL objects a slim server image doesn't ship, crashing startup with `ImportError: libxcb.so.1`. Two fixes work together:
+1. `nixpacks.toml` `[phases.build]` purges every OpenCV variant after install and reinstalls **headless alone** (a partial uninstall leaves a broken `cv2`, hence purge-then-reinstall), then asserts `import cv2` during the build so a regression fails the build rather than the deploy.
+2. `yolo_pose_service.py` sets `YOLO_AUTOINSTALL=false` **before importing ultralytics** — otherwise ultralytics re-installs `opencv-python` at runtime and silently reintroduces the crash.
+
+Declaring the X11 libs in `aptPkgs` is kept only as a safety net; it is not sufficient on its own, because the Nix-based image doesn't reliably put apt libraries on the runtime library path.
 
 ### Annotated video storage
 

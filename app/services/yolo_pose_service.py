@@ -20,6 +20,13 @@ validate it with scripts/compare_pose_models.py before trusting its output.
 
 import os
 
+# Ultralytics re-checks its requirements at import and will pip-install
+# anything missing — including opencv-python, the desktop build we
+# deliberately purge at build time (see nixpacks.toml). Left unchecked that
+# would silently reintroduce the X11 dependency that crashes startup on a
+# headless server. Must be set BEFORE ultralytics is imported.
+os.environ.setdefault("YOLO_AUTOINSTALL", "false")
+
 import cv2
 import numpy as np
 from dataclasses import dataclass, field

@@ -1,25 +1,11 @@
-# System packages. aptPkgs is additive — it does not replace Nixpacks'
-# auto-detected Python setup.
+# ── System packages ──────────────────────────────────────────────────────────
+# ffmpeg: audio extraction for the acoustic oracle, and the annotated-video
+# finalize pass (H.264 re-encode + original-audio remux).
 #
-# ffmpeg      — audio extraction for the acoustic oracle, and the annotated
-#               video finalize pass (H.264 re-encode + audio remux)
-#
-# The remaining libraries exist because of an OpenCV packaging conflict:
-# `ultralytics` hard-requires `opencv-python` (the full desktop build), so pip
-# installs it alongside our `opencv-python-headless`, and the non-headless one
-# wins at import time. It links against X11/OpenGL shared objects that a slim
-# server image does not ship, so `import cv2` fails at startup with e.g.
-#     ImportError: libxcb.so.1: cannot open shared object file
-# Supplying the libraries is more robust than fighting pip's resolver: it works
-# whichever OpenCV build ends up importable, and survives ultralytics changing
-# its dependencies.
-#
-#   libgl1        libGL.so.1
-#   libglib2.0-0  libgthread-2.0.so.0
-#   libxcb1       libxcb.so.1        <- the one that broke the first deploy
-#   libsm6        libSM.so.6
-#   libxext6      libXext.so.6
-#   libxrender1   libXrender.so.1
+# The X11/OpenGL libraries are a safety net for the OpenCV problem described
+# below. They are NOT the primary fix: this image is Nix-based, and
+# apt-installed libraries are not reliably on the runtime library path — two
+# deploys failed with `ImportError: libxcb.so.1` even with them declared here.
 [phases.setup]
 aptPkgs = [
     "ffmpeg",
@@ -29,4 +15,29 @@ aptPkgs = [
     "libsm6",
     "libxext6",
     "libxrender1",
+]
+
+# ── Force a headless-only OpenCV ─────────────────────────────────────────────
+# THE ACTUAL FIX.
+#
+# requirements.txt asks for opencv-python-headless, but `ultralytics`
+# hard-requires `opencv-python` (the full desktop build), so pip installs BOTH
+# into the same cv2/ directory and the desktop build wins at import. It links
+# against X11/OpenGL shared objects that a slim server image does not ship,
+# crashing the app at startup with `ImportError: libxcb.so.1`.
+#
+# Rather than supplying GUI libraries to a server that has no display, remove
+# the desktop build entirely. Both packages provide the same `cv2` module and
+# they overwrite each other's files, so a partial uninstall can leave a broken
+# install — hence: purge all variants, then reinstall headless alone.
+#
+# Verified locally: with only opencv-python-headless present, cv2 imports,
+# drawing and VideoCapture work, and ultralytics runs inference normally
+# (yolo11m detected a dog at 0.93 on the test frame).
+[phases.build]
+dependsOn = ["install"]
+cmds = [
+    "pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless || true",
+    "pip install --no-cache-dir opencv-python-headless",
+    "python -c \"import cv2; print('cv2 OK', cv2.__version__)\"",
 ]
