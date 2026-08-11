@@ -1,11 +1,9 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Upload, Loader2, AlertCircle, Video, Circle, Square, Clock, Eye, Volume2, Brain, CheckCircle } from 'lucide-react';
-import axios from 'axios';
 import Footer from '../components/Footer';
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8001';
-const API_KEY = import.meta.env.VITE_API_KEY || '';
+import CaptureSetup from '../components/CaptureSetup';
+import { uploadMedia, friendlyError } from '../api';
 
 const OPTIMAL_RECORD_DURATION = 30;
 const MAX_RECORD_DURATION = 45;
@@ -20,7 +18,8 @@ const ANALYSIS_STEPS = [
   { id: 'complete', label: 'Analysis complete', icon: CheckCircle }
 ];
 
-function Landing({ onAnalysisComplete }) {
+function Landing({ onAnalysisComplete, petId, onChangePet, onAddPet, onBatch }) {
+  const [context, setContext] = useState('weekly_baseline');
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -50,12 +49,12 @@ function Landing({ onAnalysisComplete }) {
     e.preventDefault();
     setIsDragging(false);
     const file = e.dataTransfer.files[0];
-    if (file && file.type.startsWith('video/')) {
+    if (file && (file.type.startsWith('video/') || file.type.startsWith('image/'))) {
       processFile(file);
     } else {
-      setError('Please upload a video file (MP4, MOV, AVI, WebM)');
+      setError('Please drop a video or a photo');
     }
-  }, []);
+  }, [petId, context]);
 
   const handleFileSelect = (e) => {
     const file = e.target.files[0];
@@ -85,62 +84,41 @@ function Landing({ onAnalysisComplete }) {
     setUploadProgress(0);
     setCurrentStep(0);
 
-    const formData = new FormData();
-    formData.append('file', file);
-
     // Start step simulation
     const stepInterval = simulateSteps();
 
     try {
-      const response = await axios.post(`${API_URL}/api/video/upload`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-          // Backend rejects uploads with 401 when API_KEY is set server-side.
-          ...(API_KEY && { 'X-API-Key': API_KEY }),
-        },
-        params: {
-          mode: 'full',
-          use_cache: true
-        },
-        onUploadProgress: (progressEvent) => {
-          const progress = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+      // Photos and videos take different endpoints; the client picks by type.
+      // pet_id links this into the pet's record; context tags what kind of
+      // capture it is. Both are optional — a one-off analysis still works.
+      const data = await uploadMedia(file, {
+        petId,
+        context: petId ? context : null,
+        onProgress: (progress) => {
           setUploadProgress(progress);
-          if (progress === 100) {
-            setCurrentStep(1); // Move to detection
-          }
+          if (progress === 100) setCurrentStep(1);
         },
       });
 
       clearInterval(stepInterval);
-      setCurrentStep(ANALYSIS_STEPS.length - 1); // Complete
+      setCurrentStep(ANALYSIS_STEPS.length - 1);
 
-      // Check for errors
-      if (response.data.data?.error && response.data.data?.error_type === "no_pet_detected") {
-        setError(response.data.data.message || 'No pet detected in video');
+      if (data.data?.error && data.data?.error_type === 'no_pet_detected') {
+        setError(data.data.message || 'No pet detected');
         setIsUploading(false);
         return;
       }
 
-      if (response.data.success) {
-        const videoUrl = URL.createObjectURL(file);
-        setTimeout(() => {
-          onAnalysisComplete(response.data.data, videoUrl);
-        }, 500);
+      if (data.success) {
+        const mediaUrl = URL.createObjectURL(file);
+        setTimeout(() => onAnalysisComplete(data.data, mediaUrl), 500);
       } else {
-        setError(response.data.error || 'Analysis failed. Please try again.');
+        setError(data.error || 'Analysis failed. Please try again.');
       }
     } catch (err) {
       clearInterval(stepInterval);
       console.error('Upload error:', err);
-      if (err.code === 'ERR_NETWORK') {
-        setError('Cannot connect to server. Make sure the backend is running on port 8001.');
-      } else if (err.response?.status === 401) {
-        setError(API_KEY
-          ? 'The API key was rejected. Check that VITE_API_KEY matches API_KEY on the backend.'
-          : 'This backend requires an API key. Set VITE_API_KEY and redeploy.');
-      } else {
-        setError(err.response?.data?.detail || err.message || 'Upload failed. Please try again.');
-      }
+      setError(friendlyError(err));
     } finally {
       setIsUploading(false);
     }
@@ -331,6 +309,15 @@ function Landing({ onAnalysisComplete }) {
             </div>
           ) : (
             <>
+              {/* Who is this of, and what kind of capture */}
+              <CaptureSetup
+                petId={petId}
+                context={context}
+                onChangePet={onChangePet}
+                onChangeContext={setContext}
+                onAddPet={onAddPet}
+              />
+
               {/* Upload Area */}
               <div
                 onDragOver={handleDragOver}
@@ -343,7 +330,7 @@ function Landing({ onAnalysisComplete }) {
               >
                 <input
                   type="file"
-                  accept="video/*"
+                  accept="video/*,image/jpeg,image/png,image/webp"
                   onChange={handleFileSelect}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 />
@@ -353,13 +340,21 @@ function Landing({ onAnalysisComplete }) {
                     isDragging ? 'text-white' : 'text-white/70'
                   }`} strokeWidth={1.5} />
                   <p className="font-roboto text-white text-lg font-medium mb-2">
-                    Drop your pet video here
+                    Drop a video or photo here
                   </p>
                   <p className="font-roboto text-white/60 text-sm">
-                    or click to browse • MP4, MOV, WebM supported
+                    or click to browse • video or photo
                   </p>
                 </div>
               </div>
+
+              {/* Bulk import */}
+              <button
+                onClick={onBatch}
+                className="w-full mt-3 py-3 rounded-xl glass-card hover:bg-white/25 text-white/85 font-roboto text-sm font-medium transition-colors"
+              >
+                Got photos and clips already? Import several at once →
+              </button>
 
               {/* Record Option */}
               <div className="mt-6 text-center">

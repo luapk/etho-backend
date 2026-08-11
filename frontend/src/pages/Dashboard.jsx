@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Volume2, Eye, ChevronDown, ChevronUp, Download, AlertTriangle, MessageCircle, BookOpen, Subtitles, Lightbulb, Info, X, Sparkles, Volume1, VolumeX } from 'lucide-react';
+import { Volume2, Eye, ChevronDown, ChevronUp, Download, AlertTriangle, MessageCircle, BookOpen, Subtitles, Lightbulb, Info, X, Sparkles, Volume1, VolumeX, CalendarRange, Camera, Ruler, Wind, Activity as ActivityIcon } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
 import AudioWaveform from '../components/AudioWaveform';
 import Footer from '../components/Footer';
@@ -374,7 +374,7 @@ const MarkerInfoModal = ({ marker, onClose }) => {
   );
 };
 
-function Dashboard({ analysisData, videoUrl }) {
+function Dashboard({ analysisData, videoUrl, onViewTimeline }) {
   const [expandedSections, setExpandedSections] = useState({ audio: true, interpret: true, didyouknow: true, research: false });
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -461,6 +461,12 @@ function Dashboard({ analysisData, videoUrl }) {
   if (!analysisData) return <div className="min-h-screen flex items-center justify-center"><p className="text-white/60">No analysis data</p></div>;
 
   const { overall_assessment, visual_analysis, audio_analysis, timeline, interpret_lines, advisory, species, breed_detected, breed_confidence, video_context, video_type } = analysisData;
+  // v17 measured layers — present only when the relevant oracle ran.
+  const captureQuality = analysisData.capture_quality;
+  const healthSignals = analysisData._health_signals;
+  const audioMetrics = analysisData._audio_metrics;
+  const respiration = analysisData._respiration;
+  const savedToPet = analysisData.pet_id;
   const distressScore = overall_assessment?.distress_score || 50;
   const zone = distressScore <= 33 ? 'green' : distressScore <= 66 ? 'yellow' : 'red';
   const zoneConfig = ZONE_CONFIG[zone];
@@ -665,6 +671,52 @@ function Dashboard({ analysisData, videoUrl }) {
       </div></header>
 
       <div className="max-w-5xl mx-auto px-6 pb-12 space-y-6">
+        {/* Saved to a pet's record — the bridge to the longitudinal view */}
+        {savedToPet && onViewTimeline && (
+          <motion.button
+            initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
+            onClick={onViewTimeline}
+            className="w-full glass-card rounded-2xl p-4 flex items-center gap-3 hover:bg-white/25 transition-colors text-left"
+          >
+            <CalendarRange className="w-5 h-5 text-white flex-none" />
+            <div className="flex-1">
+              <p className="font-roboto font-bold text-white text-sm">Saved to their record</p>
+              <p className="font-roboto text-white/60 text-xs">
+                See how this compares to their usual — tap for the timeline
+              </p>
+            </div>
+            <span className="font-roboto text-white/70 text-sm">→</span>
+          </motion.button>
+        )}
+
+        {/* How to get a better reading next time — feedback, never a gate */}
+        {captureQuality?.advice?.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+            className="glass-card rounded-2xl p-5"
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <Camera className="w-5 h-5 text-white/70" />
+              <h2 className="font-roboto font-bold text-white">
+                For an even better reading next time
+              </h2>
+              <span className="ml-auto font-roboto text-white/50 text-xs capitalize">
+                {captureQuality.grade} quality
+              </span>
+            </div>
+            <ul className="space-y-1.5">
+              {captureQuality.advice.map((a, i) => (
+                <li key={i} className="font-roboto text-white/80 text-sm flex gap-2">
+                  <span className="text-white/40">•</span>{a}
+                </li>
+              ))}
+            </ul>
+            <p className="font-roboto text-white/45 text-xs mt-3">
+              We analysed this clip regardless — quality is guidance, not a gate.
+            </p>
+          </motion.div>
+        )}
+
         {/* Video with enhanced subtitles */}
         {videoUrl && (
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl overflow-hidden">
@@ -936,6 +988,91 @@ function Dashboard({ analysisData, videoUrl }) {
         )}
 
         {/* Research */}
+        {/* What was actually MEASURED — distinct from what the AI estimated */}
+        {(healthSignals || audioMetrics?.audio_present || respiration?.usable) && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.56 }}
+            className="glass-card rounded-2xl p-6"
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <Ruler className="w-5 h-5 text-cyan-300" />
+              <h2 className="font-roboto font-bold text-xl text-white">Measured</h2>
+            </div>
+            <p className="font-roboto text-white/60 text-sm mb-4">
+              Numbers taken directly from the video and audio — not AI estimates.
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {respiration?.usable && (
+                <div className="bg-white/10 rounded-xl p-3 border border-white/15">
+                  <p className="font-roboto text-white/60 text-[11px] font-bold uppercase tracking-wide flex items-center gap-1">
+                    <Wind className="w-3 h-3" /> Breathing
+                  </p>
+                  <p className="font-roboto font-black text-white text-xl">
+                    {respiration.breaths_per_min}
+                    <span className="text-xs font-bold text-white/50"> /min</span>
+                  </p>
+                  <p className="font-roboto text-white/50 text-[11px]">while sleeping</p>
+                </div>
+              )}
+              {healthSignals?.activity_level && (
+                <div className="bg-white/10 rounded-xl p-3 border border-white/15">
+                  <p className="font-roboto text-white/60 text-[11px] font-bold uppercase tracking-wide flex items-center gap-1">
+                    <ActivityIcon className="w-3 h-3" /> Activity
+                  </p>
+                  <p className="font-roboto font-black text-white text-xl">
+                    {healthSignals.activity_level.value}
+                  </p>
+                  <p className="font-roboto text-white/50 text-[11px]">movement energy</p>
+                </div>
+              )}
+              {audioMetrics?.pitch?.mean_hz && (
+                <div className="bg-white/10 rounded-xl p-3 border border-white/15">
+                  <p className="font-roboto text-white/60 text-[11px] font-bold uppercase tracking-wide flex items-center gap-1">
+                    <Volume2 className="w-3 h-3" /> Pitch
+                  </p>
+                  <p className="font-roboto font-black text-white text-xl">
+                    {Math.round(audioMetrics.pitch.mean_hz)}
+                    <span className="text-xs font-bold text-white/50"> Hz</span>
+                  </p>
+                  <p className="font-roboto text-white/50 text-[11px]">
+                    {audioMetrics.vocalization_event_count} sound
+                    {audioMetrics.vocalization_event_count === 1 ? '' : 's'}
+                  </p>
+                </div>
+              )}
+              {healthSignals?.tremor?.detected && (
+                <div className="bg-white/10 rounded-xl p-3 border border-amber-400/40">
+                  <p className="font-roboto text-white/60 text-[11px] font-bold uppercase tracking-wide">
+                    Tremor
+                  </p>
+                  <p className="font-roboto font-black text-white text-xl">
+                    {healthSignals.tremor.frequency_hz}
+                    <span className="text-xs font-bold text-white/50"> Hz</span>
+                  </p>
+                  <p className="font-roboto text-white/50 text-[11px]">worth checking visually</p>
+                </div>
+              )}
+              {audioMetrics?.cough_like_events?.count > 0 && (
+                <div className="bg-white/10 rounded-xl p-3 border border-amber-400/40">
+                  <p className="font-roboto text-white/60 text-[11px] font-bold uppercase tracking-wide">
+                    Cough-like
+                  </p>
+                  <p className="font-roboto font-black text-white text-xl">
+                    {audioMetrics.cough_like_events.count}
+                  </p>
+                  <p className="font-roboto text-white/50 text-[11px]">sounds detected</p>
+                </div>
+              )}
+            </div>
+            {healthSignals?.tremor?.detected && (
+              <p className="font-roboto text-white/50 text-xs mt-3">
+                Shivering, purring and a shaky camera all look similar to the
+                tremor detector — worth an eyeball before worrying.
+              </p>
+            )}
+          </motion.div>
+        )}
+
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 }} className="glass-card rounded-2xl overflow-hidden">
           <button onClick={() => toggleSection('research')} className="w-full p-6 flex items-center justify-between hover:bg-white/5">
             <h2 className="font-roboto font-bold text-xl text-white flex items-center gap-2"><BookOpen className="w-5 h-5 text-white/70" />Research Frameworks</h2>
