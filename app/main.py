@@ -19,6 +19,7 @@ import io
 
 from .services.gemini_service import analyze_video, GEMINI_MODEL
 from .services.yolo_pose_service import YoloPoseService
+from .services import yolo_pose_service
 from .services.audio_service import AudioService
 from .services.respiration_service import RespirationService
 from .services.health_signals import HealthSignalService
@@ -177,10 +178,13 @@ def config_status() -> dict:
     checks.append({"item": "Pet record storage", "ok": storage["writable"] and storage["persistent"],
                    "detail": storage["message"]})
 
-    checks.append({"item": "Pose tracking (YOLO)", "ok": _yolo.available,
-                   "detail": "Ready." if _yolo.available else
-                             "Unavailable — pose measurement and annotated "
-                             "video are skipped; Gemini analysis still works."})
+    checks.append({"item": "Pet detection (YOLO)", "ok": _yolo.available,
+                   "detail": (f"Ready ({yolo_pose_service.DETECT_MODEL}). Skeletal "
+                              f"pose is intentionally disabled — no animal-trained "
+                              f"keypoint model.") if _yolo.available else
+                             "Unavailable — detection, measurement ROIs and "
+                             "annotated video are skipped; Gemini analysis "
+                             "still works."})
 
     checks.append({"item": "Audio analysis", "ok": _audio.available,
                    "detail": "Ready." if _audio.available else
@@ -239,23 +243,33 @@ async def root():
         "status": "healthy",
         "service": "Etho API",
         "version": "17.1.0",
-        "engine": f"{GEMINI_MODEL} + yolo11-pose",
-        "pose_tracking": _yolo.available,
+        "engine": f"{GEMINI_MODEL} + {yolo_pose_service.DETECT_MODEL}",
+        "pet_detection": _yolo.available,
+        "pose_tracking": _yolo.available and yolo_pose_service.ENABLE_POSE,
         "audio_analysis": _audio.available,
+        "respiration_analysis": _resp.available,
+        "health_signals": _health.available,
         "features": [
-            "YOLO11-Pose keypoint detection",
-            "Spinal curvature measurement",
-            "Acoustic measurement (pitch, tonality, purr-band)",
+            "Pet detection + framing measurement",
+            "Acoustic measurement (pitch, tonality, purr-band, cough screen)",
+            "Motion health signals (activity, tremor, postural sway)",
+            "Sleeping respiratory rate (SRR) — sleeping-tagged clips only",
             "Annotated video + image output",
             "DogFACS / Feline Grimace Scale analysis",
-            "Instrument scoring (FGS / observable stress subset)",
+            "Instrument scoring (FGS / observable stress subset) with evidence frames",
             "Morton's motivation-structural rules",
             "Breed morphology normalisation",
             "Two-pass hallucination prevention",
-            "Sleeping respiratory rate (SRR) — sleeping-tagged clips only",
             "Longitudinal pet records + trend baselines",
+            "Batch import dated by media capture time",
             "Pre-consultation vet reports",
         ],
+        "not_measured": [
+            "Skeletal pose / spinal curvature — no animal-trained keypoint "
+            "model; human COCO-17 keypoints fit human anatomy to pets",
+            "Per-limb gait, stride length, weight-bearing symmetry",
+        ],
+        "check_configuration": "/health",
     }
 
 
@@ -930,10 +944,18 @@ async def list_models():
                 "max_video_duration_minutes": 60,
             }
         ],
-        "pose_model": {
-            "id": "yolo11n-pose",
+        "detection_model": {
+            "id": yolo_pose_service.DETECT_MODEL,
             "available": _yolo.available,
-            "description": "Real-time keypoint detection for bounding boxes, skeleton overlay, and spinal angle measurement",
+            "description": "Per-frame cat/dog detection — drives framing quality, "
+                           "measurement ROIs, postural sway, and the annotated overlay",
+        },
+        "pose_model": {
+            "id": yolo_pose_service.POSE_MODEL,
+            "enabled": yolo_pose_service.ENABLE_POSE,
+            "description": "DISABLED: available keypoint weights are human-trained "
+                           "(COCO-17) and fit human anatomy to animals. Supply an "
+                           "animal-trained model and set ENABLE_POSE=1 to enable.",
         },
         "default": GEMINI_MODEL,
     }
