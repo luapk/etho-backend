@@ -440,136 +440,46 @@ function buildSpeechMoments(analysisData) {
   const sounds = measured.length ? measured : identified;
   if (!sounds.length) return [];
 
-  const spoken = new Set();
-  const out = [];
-  for (const s of sounds) {
-    let best = null;
-    let bestGap = Infinity;
-    for (const l of lines) {
-      if (spoken.has(l.i)) continue;          // one line per sound, no echoes
+  /* Closest pairs first, not first-sound-first.
+   *
+   * Walking the sounds in order and giving each its nearest free line lets an
+   * early sound take a line that a later sound matches far better, and the
+   * later sound then gets nothing. Measured: lines at 0:00/0:05/0:08 against
+   * sounds at 3.1/5.4/8.2 produced two bubbles with the 5.0 line handed to the
+   * sound at 3.1 (1.9s away) while the sound at 5.4 — 0.4s away — went
+   * unmatched. Ranking every candidate pair by gap and assigning the tightest
+   * first fixes both the count and the pairing.
+   */
+  const pairs = [];
+  sounds.forEach((s, si) => {
+    lines.forEach((l) => {
       const gap = Math.abs(l.t - s.t);
-      if (gap <= SPEECH_MATCH_WINDOW && gap < bestGap) { best = l; bestGap = gap; }
-    }
-    if (!best) continue;
-    spoken.add(best.i);
+      if (gap <= SPEECH_MATCH_WINDOW) pairs.push({ si, s, l, gap });
+    });
+  });
+  pairs.sort((a, b) => a.gap - b.gap);
+
+  const usedSound = new Set();
+  const usedLine = new Set();
+  const out = [];
+  for (const { si, s, l } of pairs) {
+    if (usedSound.has(si) || usedLine.has(l.i)) continue;
+    usedSound.add(si);
+    usedLine.add(l.i);
     out.push({
       from: s.t,
       to: s.t + Math.max(s.dur, SPEECH_MIN_HOLD),
-      text: best.text,
-      zone: best.zone || getBehaviorZone(best.text),
-      key: `${s.t.toFixed(2)}-${best.i}`,
+      // The moment is stamped with the MEASURED time, which is also what the
+      // bubble prints. This was missing entirely, so every bubble was labelled
+      // 0:00 whatever second it opened on.
+      t: s.t,
+      lineIndex: l.i,
+      text: l.text,
+      zone: l.zone || getBehaviorZone(l.text),
+      key: `${s.t.toFixed(2)}-${l.i}`,
     });
   }
   return out.sort((a, b) => a.from - b.from);
-}
-
-/* ── "Is this the same animal?" ────────────────────────────────────────────
- *
- * One misfiled clip puts a stranger's scores into a pet's baseline, and every
- * deviation, slope and red flag in this product is measured against that
- * baseline. So the backend screens each upload against the pet it was filed
- * under and, when something doesn't line up, says so here.
- *
- * It is a question, never a verdict — the analysis ran, the record was kept,
- * and the guardian is the only one who actually knows which animal is on
- * screen. It comes with the fix attached: moving the capture to the right pet
- * recomputes both baselines, which is why moving beats deleting and
- * re-uploading.
- */
-function IdentityNotice({ check, analysisId }) {
-  const [pets, setPets] = useState(null);
-  const [picking, setPicking] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [moved, setMoved] = useState(null);
-  const [failed, setFailed] = useState(null);
-
-  const openPicker = () => {
-    setPicking(true);
-    if (!pets) listPets().then(setPets).catch(() => setPets([]));
-  };
-
-  const move = async (pet) => {
-    setBusy(true);
-    setFailed(null);
-    try {
-      await moveAnalysisToPet(analysisId, pet.id);
-      setMoved(pet.name);
-    } catch (e) {
-      setFailed(friendlyError(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const hard = check.status === 'species_mismatch';
-
-  if (moved) {
-    return (
-      <div className="glass-card rounded-2xl p-4 border-2 border-emerald-400/45 flex gap-3">
-        <Check className="w-5 h-5 text-emerald-300 flex-none mt-0.5" />
-        <p className="font-roboto text-white/90 text-sm">
-          Moved to {moved}. Both pets' baselines have been worked out again
-          without it and with it.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className={`glass-card rounded-2xl p-4 border-2 ${
-      hard ? 'border-amber-400/60' : 'border-white/30'}`}>
-      <div className="flex gap-3">
-        <AlertTriangle className={`w-5 h-5 flex-none mt-0.5 ${
-          hard ? 'text-amber-300' : 'text-white/55'}`} />
-        <div className="flex-1">
-          <p className="font-roboto font-bold text-white text-sm">{check.headline}</p>
-          <p className="font-roboto text-white/70 text-sm mt-1">{check.detail}</p>
-
-          {failed && (
-            <p className="font-roboto text-amber-200 text-xs mt-2">{failed}</p>
-          )}
-
-          {!picking ? (
-            <button
-              onClick={openPicker}
-              className="mt-3 px-4 py-2 rounded-xl bg-white/20 hover:bg-white/30 text-white font-roboto text-sm font-bold transition-colors"
-            >
-              Move to another pet
-            </button>
-          ) : (
-            <div className="mt-3">
-              {pets === null ? (
-                <p className="font-roboto text-white/50 text-xs">Loading your pets…</p>
-              ) : pets.length < 2 ? (
-                <p className="font-roboto text-white/50 text-xs">
-                  There's nowhere else to move it — you've only got one pet on record.
-                </p>
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  {pets.map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() => move(p)}
-                      disabled={busy}
-                      className="px-3 py-2 rounded-xl bg-white/15 hover:bg-white/25 disabled:opacity-50 text-white/90 font-roboto text-sm transition-colors"
-                    >
-                      {p.name}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <button
-                onClick={() => setPicking(false)}
-                className="mt-2 font-roboto text-white/45 hover:text-white/80 text-xs transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function PetSpeechBubble({ subtitle }) {
@@ -636,6 +546,12 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
   const videoRef = useRef(null);
 
   const speechMoments = useMemo(() => buildSpeechMoments(analysisData), [analysisData]);
+  // Which POV lines never got a bubble, so the list below can say why.
+  const silentLines = useMemo(() => {
+    const spoken = new Set(speechMoments.map((m) => m.lineIndex));
+    return new Set((analysisData?.interpret_lines || [])
+      .map((_, i) => i).filter((i) => !spoken.has(i)));
+  }, [analysisData, speechMoments]);
 
   // Photos are analysed as a single moment: no playback, no track to scrub, no
   // audio, no sequence. Half this screen is built around a clip, and showing
@@ -651,19 +567,35 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
       ? mediaType === 'image'
       : (analysisData?.timeline?.length === 1 && !analysisData?._audio_metrics?.audio_present);
 
+  /* Attach on [videoUrl], NOT on []. The clip is fetched as a blob (the media
+     endpoint is owner-scoped and an <img>/<video> src can't carry the API
+     key), so on the observation screen this component mounts BEFORE the
+     <video> element exists. With empty deps the effect ran once against a null
+     ref, attached nothing, and the playhead never moved off zero — no
+     scrubbing, no distress marker tracking, and captions that could only ever
+     fire on a sound at 0:00. Re-running when the source appears fixes it. */
   useEffect(() => {
     const v = videoRef.current;
-    if (!v) return;
+    if (!v) return undefined;
     const onTime = () => setCurrentTime(v.currentTime);
     const onDur = () => setDuration(v.duration);
     const onPlay = () => setIsPlaying(true);
     const onPause = () => setIsPlaying(false);
+    onTime();
+    onDur();
     v.addEventListener('timeupdate', onTime);
     v.addEventListener('durationchange', onDur);
+    v.addEventListener('loadedmetadata', onDur);
     v.addEventListener('play', onPlay);
     v.addEventListener('pause', onPause);
-    return () => { v.removeEventListener('timeupdate', onTime); v.removeEventListener('durationchange', onDur); v.removeEventListener('play', onPlay); v.removeEventListener('pause', onPause); };
-  }, []);
+    return () => {
+      v.removeEventListener('timeupdate', onTime);
+      v.removeEventListener('durationchange', onDur);
+      v.removeEventListener('loadedmetadata', onDur);
+      v.removeEventListener('play', onPlay);
+      v.removeEventListener('pause', onPause);
+    };
+  }, [videoUrl, isStill]);
 
   // The bubble is open only while a measured sound is being spoken over.
   useEffect(() => {
@@ -1296,6 +1228,19 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
             {expandedSections.interpret && (
               <div className="px-6 pb-6">
                 <p className="text-white/50 text-xs mb-4 italic">What your pet likely perceives — based on the specific context of this {isStill ? 'photo' : 'video'}</p>
+                {/* Why some of these never appear as a bubble on the clip.
+                    The bubble opens on MEASURED sound, so a reading of a
+                    moment the animal was silent through is still a valid
+                    perception but is not them speaking. Listing it here with
+                    no explanation, while it never shows on the video, reads as
+                    a bug — which is exactly how it was reported. */}
+                {!isStill && silentLines.size > 0 && (
+                  <p className="text-white/40 text-xs mb-4">
+                    Lines marked <span className="text-white/60 font-bold">silent</span> had
+                    no measured sound at that moment, so they don't open a
+                    speech bubble on the clip.
+                  </p>
+                )}
                 <div className="space-y-3">
                   {interpret_lines.map((line, i) => {
                     const petPovText = getPetPovText(line);
@@ -1312,6 +1257,11 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
                             <p className="text-white font-medium italic">"{petPovText}"</p>
                             {line.trigger && <p className="text-white/40 text-xs mt-1">Trigger: {line.trigger}</p>}
                           </div>
+                          {!isStill && silentLines.has(i) && (
+                            <span className="px-2 py-0.5 rounded bg-white/10 text-white/45 text-[10px] font-bold uppercase tracking-wide whitespace-nowrap">
+                              silent
+                            </span>
+                          )}
                           <span className="px-2 py-0.5 rounded text-xs font-medium" style={{ backgroundColor: `${c}33`, color: c }}>
                             {z === 'red' ? 'High' : z === 'yellow' ? 'Med' : 'Low'}
                           </span>
