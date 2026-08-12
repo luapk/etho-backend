@@ -26,7 +26,7 @@ from .services.health_signals import HealthSignalService
 from .services import media_metadata
 from .services import (
     pet_store, vet_report, capture_quality, breed_reference, model_selector,
-    media_store,
+    media_store, breed_health,
 )
 from .services.video_annotator import (
     annotate_video,
@@ -887,6 +887,35 @@ async def get_pet_weights(pet_id: str, auth: dict = Depends(get_auth)):
         "weight_assessment": breed_reference.assess_weight(
             pet.get("species"), pet.get("breed"), pet.get("weight_kg")),
     }
+
+
+@app.get("/api/pets/{pet_id}/capture-plan")
+async def get_capture_plan(pet_id: str, auth: dict = Depends(get_auth)):
+    """What is worth filming for this pet, and why.
+
+    Breed predispositions are turned into capture suggestions rather than
+    warnings: the only ones that surface are those Etho has a real measurement
+    for. Uses the profile's guardian-entered `breed`, never the model's
+    `breed_detected` — epidemiology layered on a guess is not evidence.
+    """
+    pet = _authorized_pet(pet_id, auth)
+    return {"success": True,
+            "capture_plan": breed_health.capture_plan(
+                pet.get("species"), pet.get("breed"),
+                pet_store.get_history(pet_id))}
+
+
+@app.get("/api/pets/{pet_id}/breed-context")
+async def get_breed_context(pet_id: str, auth: dict = Depends(get_auth)):
+    """Population-level predispositions for this pet's confirmed breed.
+
+    Context about a GROUP, never a finding about this animal, and never fed
+    back into the analysis pipeline — see breed_health.py for why that
+    separation is load-bearing.
+    """
+    pet = _authorized_pet(pet_id, auth)
+    return {"success": True,
+            "breed_context": breed_health.lookup(pet.get("species"), pet.get("breed"))}
 
 
 @app.get("/api/pets/{pet_id}/trends")

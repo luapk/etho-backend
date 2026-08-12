@@ -59,6 +59,15 @@ export const getTrends = (id) =>
 export const getHistory = (id) =>
   client.get(`/api/pets/${id}/history`).then((r) => r.data.history || []);
 
+/** What's worth filming for this pet, and why. Breed-driven when the
+ *  guardian has confirmed a breed; otherwise just the baseline ask. */
+export const getCapturePlan = (id) =>
+  client.get(`/api/pets/${id}/capture-plan`).then((r) => r.data.capture_plan);
+
+/** Population-level breed predispositions — context, never a finding. */
+export const getBreedContext = (id) =>
+  client.get(`/api/pets/${id}/breed-context`).then((r) => r.data.breed_context);
+
 export const getAnalysis = (id) =>
   client.get(`/api/analyses/${id}`).then((r) => r.data.analysis);
 

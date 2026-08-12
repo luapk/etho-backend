@@ -79,6 +79,8 @@ PATCH /api/pets/{id}                    update profile
 POST  /api/video/upload?pet_id=...      analysis is logged to that pet (pet_id optional everywhere)
 GET   /api/pets/{id}/history            chronological indexed metrics (for timeline/chart UI)
 GET   /api/pets/{id}/trends             baseline ± SD, latest deviation, slope (pts/week), red flags
+GET   /api/pets/{id}/capture-plan       what's worth filming next, and why (breed-driven)
+GET   /api/pets/{id}/breed-context      population predispositions for the CONFIRMED breed
 GET   /api/analyses/{id}                full stored raw result (provenance) + has_poster/has_media
 GET   /api/analyses/{id}/poster         timeline thumbnail (JPEG, owner-scoped)
 GET   /api/analyses/{id}/media          stored annotated clip/photo (404 once evicted)
@@ -96,6 +98,16 @@ GET   /api/pets/{id}/weights            weight log + breed-range assessment
 **Capture time, not upload time** (`media_metadata.py`): every record is dated by when the media was RECORDED — EXIF `DateTimeOriginal` for photos, container `creation_time` for videos, filename patterns (`IMG_20260315_143022`, `PXL_…`, WhatsApp `IMG-20260315-WA…`) as a fallback since messaging apps strip metadata. Without this, importing a phone backlog would stamp months of history onto a single day and destroy the record. `created_at` = observation date; `uploaded_at` = when it reached us; `capture_time_source` (exif|video_metadata|filename|unknown) makes every date auditable.
 
 **Motion-derived health signals** (`health_signals.py`): activity level (lethargy screen), movement regularity, tremor (4–12 Hz band), and postural sway (balance screen) — all from whole-frame motion and the pet's bounding box, so no paw-level keypoints required. **Uses signed displacement, not frame-difference energy**: energy is rectified and would report double the true frequency. Explicitly does NOT measure per-limb lameness, stride length, footfall timing, or weight-bearing asymmetry — those need AP-10K/DeepLabCut-class pose, and force plates remain the clinical standard. The audio service additionally flags `cough_like` events (short, aperiodic, broadband) and counts them — heuristic, confirmed by Gemini.
+
+**Breed predispositions are a third kind of claim** (`breed_health.py`): not measured from the animal, not AI-estimated from their footage — a population base rate about a *group*. Merging it into either existing column would silently turn "Cavaliers commonly develop MMVD" into "your Cavalier has MMVD". Three rules keep it quarantined, and they're load-bearing:
+
+1. **It never reaches Gemini.** Not Pass 1, not Pass 2. Tell the model a breed is prone to BOAS and it will see BOAS — the identical failure mode that got pose estimation switched off. Pass 1 is a ground-truth lock and Pass 2 *must* honour it, so a prior injected upstream becomes a mandatory hallucination. A test asserts the prompts contain none of these terms and that `gemini_service.py` never imports the module.
+2. **It never moves a score.** A distress number that reflects breed instead of the animal destroys the per-pet baseline design.
+3. **Guardian-confirmed breeds only.** `breed_detected` is a guess from one frame; epidemiology layered on a guess is not evidence. The only sanctioned use is `suggest_breed()`, which offers a breed for a human to ratify once several analyses agree.
+
+Its primary output is not a warning but a **capture plan** (`GET /api/pets/{id}/capture-plan`): predispositions Etho has a real measurement for become an ask for the footage that produces it. A Maine Coon's HCM risk renders as "film them asleep" → SRR → the published >30/min threshold, because resting respiratory rate is the at-home measure vets actually use for cardiac and airway disease. A base rate that generates evidence earns its place; one that only generates worry does not. Predispositions we can screen for *nothing* on (IVDD, corneal ulceration, bloat) are stated with an explicit limitation rather than quietly dropped — the bloat entry tells the guardian to call an emergency vet instead of filming. The vet report gets the same data as a cited appendix, structurally separated from every observed field.
+
+Deliberately NOT built: any combined breed × observation risk score (a diagnosis with extra steps, and a medical-device claim), odds ratios shown to guardians (meaningless without absolute base rates), and breed life-expectancy figures.
 
 **Weight screening** (`breed_reference.py`): typical adult ranges for ~40 dog and ~16 cat breeds (substring-matched, species-level fallback for cats only — dog breeds vary too widely). Status below/within/above range with percent outside. Always framed as a rough screen: body condition score (BCS) by a vet is the clinical standard, and every output says so. The vet report gets a Weight section (latest vs range, delta over time, full log).
 
@@ -157,6 +169,7 @@ Scientific-validity rules encoded in this layer:
 | `app/services/vet_report.py` | Pre-consultation report builder (structured JSON + rendered Markdown) |
 | `app/services/video_annotator.py` | Frame-by-frame rendering of bounding boxes, skeleton, breed tag, distress meter, event/POV text strips |
 | `app/services/media_store.py` | Persistent media library under `$DATA_DIR/media` — posters + annotated clips, budget-capped eviction |
+| `app/services/breed_health.py` | Breed predisposition context and the capture plan it drives — population data, quarantined from the pipeline |
 | `app/prompts/ethological_prompt.py` | The entire Gemini system prompt — output schema, behavioural frameworks, FACS codes, morphological normalisation rules, YOLO integration guidance |
 
 ### Response shape (key fields)

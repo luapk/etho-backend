@@ -3,8 +3,9 @@ import { motion } from 'framer-motion';
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip,
          ReferenceArea, ReferenceLine } from 'recharts';
 import { AlertTriangle, FileText, Scale, Video, Image as ImageIcon,
-         Wind, TrendingUp, TrendingDown, Minus, Plus } from 'lucide-react';
-import { getTimeline, getTrends, getPet, addWeight, fetchPoster, friendlyError } from '../api';
+         Wind, TrendingUp, TrendingDown, Minus, Plus, Camera, Check } from 'lucide-react';
+import { getTimeline, getTrends, getPet, addWeight, fetchPoster, getCapturePlan,
+         updatePet, friendlyError } from '../api';
 
 /*
  * The longitudinal view — the reason the record layer exists.
@@ -139,10 +140,12 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
   const [error, setError] = useState(null);
   const [weighing, setWeighing] = useState(false);
   const [newWeight, setNewWeight] = useState('');
+  const [plan, setPlan] = useState(null);
 
   const load = () => {
     if (!petId) return;
     setLoading(true);
+    getCapturePlan(petId).then(setPlan).catch(() => setPlan(null));
     Promise.all([getPet(petId), getTimeline(petId), getTrends(petId)])
       .then(([p, tl, tr]) => {
         setPet(p.pet);
@@ -167,6 +170,15 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
     })),
     [analyses]
   );
+
+  const confirmBreed = async (breed) => {
+    try {
+      await updatePet(petId, { breed });
+      load();
+    } catch (err) {
+      setError(friendlyError(err));
+    }
+  };
 
   const submitWeight = async (e) => {
     e.preventDefault();
@@ -379,6 +391,71 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                 </ResponsiveContainer>
               </div>
             </div>
+
+            {/* What to film next.
+                Breed predispositions arrive here as an ASK, never a warning:
+                the only ones that surface are those Etho has a real
+                measurement for, so a base rate turns into evidence instead of
+                anxiety. Population context, never a claim about this pet. */}
+            {plan?.plan?.length > 0 && (
+              <div className="glass-card rounded-2xl p-5">
+                <div className="flex items-center gap-2 mb-1">
+                  <Camera className="w-5 h-5 text-white/70" />
+                  <h2 className="font-roboto font-bold text-white">
+                    Worth capturing next
+                  </h2>
+                </div>
+                {plan.driven_by_breed && (
+                  <p className="font-roboto text-white/50 text-xs mb-3">
+                    Tailored to what's commonly reported in {plan.breed}s — not
+                    a claim about {pet?.name}.
+                  </p>
+                )}
+                <div className="space-y-3">
+                  {plan.plan.slice(0, 2).map((step) => (
+                    <button
+                      key={step.id}
+                      onClick={onUpload}
+                      className="w-full text-left p-4 rounded-xl bg-white/10 hover:bg-white/20 transition-colors"
+                    >
+                      <p className="font-roboto font-bold text-white text-sm">
+                        {step.action}
+                      </p>
+                      <p className="font-roboto text-white/70 text-xs mt-1">{step.why}</p>
+                      <p className="font-roboto text-white/45 text-[11px] mt-2">
+                        Measures: {step.measures}
+                        {step.done_count > 0 && ` · ${step.done_count} so far`}
+                        {step.last_measured && ` · last ${fmtDate(step.last_measured)}`}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Breed confirmation. breed_detected is a guess from a frame, so
+                it is offered for a human to ratify and never used until they
+                do — epidemiology on top of a guess isn't evidence. */}
+            {plan?.breed_suggestion && (
+              <div className="glass-card rounded-2xl p-4 flex items-center gap-3 flex-wrap">
+                <div className="flex-1 min-w-[180px]">
+                  <p className="font-roboto text-white text-sm">
+                    Is {pet?.name} a <strong>{plan.breed_suggestion.breed}</strong>?
+                  </p>
+                  <p className="font-roboto text-white/55 text-xs mt-0.5">
+                    Seen in {plan.breed_suggestion.seen_in} of their captures.
+                    Confirming tailors what's worth filming — we won't guess it
+                    for you.
+                  </p>
+                </div>
+                <button
+                  onClick={() => confirmBreed(plan.breed_suggestion.breed)}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/30 hover:bg-white/40 text-white font-roboto font-bold text-sm"
+                >
+                  <Check className="w-4 h-4" /> Yes
+                </button>
+              </div>
+            )}
 
             {/* Capture filmstrip */}
             <div>

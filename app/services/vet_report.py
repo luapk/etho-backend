@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 
 from . import pet_store
 from .breed_reference import assess_weight
+from . import breed_health
 
 DISCLAIMER = (
     "This is an AI-assisted observational summary generated from "
@@ -148,6 +149,9 @@ def build_report(pet_id: str, reason_for_visit: str = None) -> dict:
                                "the guardian tagged as sleeping."),
         },
         "weight": weight_block,
+        # Population context, kept structurally separate from every observed
+        # field above it. Only populated from the guardian-entered breed.
+        "breed_context": breed_health.lookup(pet.get("species"), pet.get("breed")),
         "observations": history,
         "recurring_markers": markers,
         "system_versions": [
@@ -304,6 +308,37 @@ def render_markdown(report: dict) -> str:
                 add(f"| {w['recorded_at'][:10]} | {w['weight_kg']} | {w.get('note') or '—'} |")
         add("")
         add(f"> {wa.get('note', '')}")
+        add("")
+
+    bc = report.get("breed_context", {})
+    if bc.get("predispositions"):
+        add("## Breed Context (population data — NOT observations of this animal)")
+        add("")
+        add(f"> {bc['disclaimer']}")
+        add("")
+        if bc.get("conformations"):
+            add(f"Conformation: {', '.join(bc['conformations'])}.")
+            add("")
+        add("| Reported in this breed | Category | Can Etho screen for it? |")
+        add("|---|---|---|")
+        for r in bc["predispositions"]:
+            if r.get("observable"):
+                labels = [breed_health.OBSERVABLE[o]["label"] for o in r["observable"]]
+                cover = "Partly — " + ", ".join(labels)
+            else:
+                cover = "**No**"
+            add(f"| {r['condition']} | {r['category']} | {cover} |")
+        add("")
+        for r in bc["predispositions"]:
+            add(f"- **{r['condition']}** — {r['note']}")
+            if r.get("unobservable_reason"):
+                add(f"  - *Limitation*: {r['unobservable_reason']}")
+            add(f"  - *Source*: {r['source']}")
+        add("")
+        add("> Listed because the guardian recorded this breed on the profile. "
+            "Breed was NOT inferred from the footage, and nothing in this "
+            "section influenced any score, observation or trend above — it is "
+            "compiled after the analysis and kept separate from it.")
         add("")
 
     resp = report.get("respiratory", {})
