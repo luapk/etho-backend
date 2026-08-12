@@ -465,6 +465,23 @@ def count_analyses() -> int:
         return 0
 
 
+def analysis_media_audit(limit: int = 100000) -> list:
+    """(id, pet_id, created_at) for every analysis, newest last.
+
+    Exists so /health can tell the two innocent explanations for "no pictures"
+    apart: records that predate media storage, versus records logged without a
+    pet (which never store media by design).
+    """
+    try:
+        with _lock, _connect() as conn:
+            rows = conn.execute(
+                "SELECT id, pet_id, created_at FROM analyses "
+                "ORDER BY created_at LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
 def analysis_ids(limit: int = 100000) -> list:
     """All analysis IDs, for filesystem-side coverage checks."""
     try:

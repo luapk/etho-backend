@@ -338,15 +338,44 @@ def storage_status() -> dict:
     # never wrote any (bad DATA_DIR, or every record predates the feature),
     # whereas posters > 0 means storage works and anything missing on screen
     # is a frontend or auth problem.
-    logged = pet_store.count_analyses()
-    with_poster = sum(1 for a in pet_store.analysis_ids() if has_poster(a))
+    audit = pet_store.analysis_media_audit()
+    logged = len(audit)
+    assigned = [a for a in audit if a.get("pet_id")]
+    unassigned = logged - len(assigned)
+    with_poster = sum(1 for a in audit if has_poster(a["id"]))
+
+    # The newest record is the one that settles it. If it was logged after this
+    # code went live and still has no picture, something is failing; if it
+    # predates the deploy, there is nothing to find — its media was deleted at
+    # the time, before anything kept it.
+    newest = audit[-1] if audit else None
+    newest_at = newest["created_at"] if newest else None
+    newest_poster = bool(newest and has_poster(newest["id"]))
+    first_with_poster = next((a["created_at"] for a in audit if has_poster(a["id"])), None)
+
+    if not logged:
+        coverage = "no observations logged yet"
+    elif with_poster:
+        coverage = (f"{with_poster}/{logged} observations have a stored picture "
+                    f"(media kept from {first_with_poster[:10]} onward)")
+    else:
+        coverage = (f"0/{logged} observations have a stored picture. Newest was "
+                    f"logged {newest_at[:19] if newest_at else 'never'} — if that "
+                    f"is BEFORE this build was deployed, its media was never "
+                    f"kept and cannot be recovered; upload one new clip to test.")
 
     return {
         "dir": media_root(),
         "analyses_logged": logged,
         "analyses_with_poster": with_poster,
-        "coverage": (f"{with_poster}/{logged} observations have a stored picture"
-                     if logged else "no observations logged yet"),
+        # Unassigned analyses NEVER store media — there is no timeline for it to
+        # appear in, so nothing would ever read it. Counted separately so this
+        # cannot be mistaken for a failure.
+        "analyses_with_pet": len(assigned),
+        "analyses_unassigned": unassigned,
+        "newest_analysis_at": newest_at,
+        "newest_has_poster": newest_poster,
+        "coverage": coverage,
         "clips_stored": clips,
         "posters_stored": posters,
         "avatars_stored": avatars,
