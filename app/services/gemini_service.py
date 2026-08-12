@@ -486,6 +486,53 @@ def parse_json_response(response_text: str) -> dict:
     }
 
 
+# ── Who made the sound ───────────────────────────────────────────────────────
+# Home footage is mostly people talking to the animal, and a human voice is not
+# evidence about the animal. The DSP cannot tell them apart — it segments by
+# energy — so this is an IDENTIFICATION, and the model is asked for it directly
+# (`source` on every vocalization, prompt v6.5).
+#
+# These word lists are the fallback for everything else: records analysed
+# before v6.5, and any response where the model left the field out. Resolved
+# here, once, on the server, so the timeline tile and the observation view can
+# never disagree about whether a sound was the pet or a person.
+# The same lists exist in AudioWaveform.jsx for records read straight from
+# full_json in the browser; keep them in step.
+_HUMAN_WORDS = (
+    "human", "person", "people", "owner", "guardian", "man", "woman", "child",
+    "speech", "speaking", "talking", "voice", "vocal cords", "laugh", "giggle",
+    "whistle", "whistling", "baby talk", "baby-talk", "cooing", "kissing",
+    "shush", "calling", "command", "praise", "conversation",
+)
+_PET_WORDS = (
+    "bark", "woof", "yip", "yap", "howl", "growl", "whine", "whimper", "yelp",
+    "meow", "miaow", "mew", "purr", "hiss", "chirp", "chatter", "trill",
+    "yowl", "caterwaul", "pant", "snuffle", "snort", "sneeze", "cough",
+    "grunt", "sigh", "squeak",
+)
+VOCAL_SOURCES = ("pet", "human", "other")
+
+
+def resolve_vocal_source(vocalization: dict) -> str:
+    """pet | human | other for one identified vocalization.
+
+    The model's own `source` wins when it gave one. Otherwise the label text
+    decides, and anything unrecognised is "other" — never "pet". Defaulting an
+    unknown sound to the animal is exactly the fabrication this field exists to
+    prevent.
+    """
+    declared = str((vocalization or {}).get("source") or "").strip().lower()
+    if declared in VOCAL_SOURCES:
+        return declared
+    text = " ".join(str((vocalization or {}).get(k) or "")
+                    for k in ("type", "subtype", "interpretation")).lower()
+    if any(w in text for w in _HUMAN_WORDS):
+        return "human"
+    if any(w in text for w in _PET_WORDS):
+        return "pet"
+    return "other"
+
+
 def validate_and_enrich_response(result: dict, scene_context: dict) -> dict:
     """
     Validate response structure and add any missing fields with defaults.
@@ -548,6 +595,13 @@ def validate_and_enrich_response(result: dict, scene_context: dict) -> dict:
     
     # Inject verified scene context
     result["_verified_scene"] = scene_context
+
+    # Stamp who made each sound, so no reader has to guess later.
+    aa = result.get("audio_analysis")
+    if isinstance(aa, dict) and isinstance(aa.get("vocalizations_detected"), list):
+        for v in aa["vocalizations_detected"]:
+            if isinstance(v, dict):
+                v["source"] = resolve_vocal_source(v)
     
     # Check for other animals - adjust analysis if predator-prey situation
     other_animals = scene_context.get('other_animals_present', [])

@@ -46,7 +46,13 @@ const PHOTO_STEPS = [
 const isImage = (f) => (f.type || '').startsWith('image/');
 const isMedia = (f) => isImage(f) || (f.type || '').startsWith('video/');
 
-function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline, onManagePets }) {
+/* `embedded` renders this inside the pet's page, as a tab beside Timeline.
+   The page already carries the Etho bar, the pet's portrait and their name, so
+   the screen drops its own full-height frame and its own pet switcher rather
+   than printing the same thing twice — a duplicate header is exactly what made
+   uploading feel like leaving the app. */
+function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline, onManagePets,
+                   embedded = false }) {
   const [pets, setPets] = useState(null);          // null while loading
   const [nameInput, setNameInput] = useState('');
   const [creating, setCreating] = useState(false);
@@ -302,10 +308,10 @@ function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline, onMan
     const done = batch.status === 'done';
     const pct = Math.round(((batch.completed + batch.failed) / Math.max(batch.total, 1)) * 100);
     return (
-      <div className="min-h-screen flex flex-col">
-        <header className="py-8 px-6 text-center">
+      <div className={embedded ? 'flex flex-col' : 'min-h-screen flex flex-col'}>
+        <header className={embedded ? 'pb-2 text-center' : 'py-8 px-6 text-center'}>
           </header>
-        <div className="flex-1 px-6 pb-16">
+        <div className={embedded ? 'pb-6' : 'flex-1 px-6 pb-16'}>
           <div className="max-w-xl mx-auto glass-card rounded-2xl p-6">
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-roboto font-bold text-white text-lg">
@@ -360,8 +366,8 @@ function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline, onMan
 
   // ── Main: drop zone ────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen flex flex-col">
-      <header className="py-8 px-6">
+    <div className={embedded ? 'flex flex-col' : 'min-h-screen flex flex-col'}>
+      <header className={embedded ? 'hidden' : 'py-8 px-6'}>
         <div className="max-w-xl mx-auto flex flex-col items-center">
           {/* Whose clip this is — a quiet control, not a form */}
           <button
@@ -402,7 +408,7 @@ function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline, onMan
         </div>
       </header>
 
-      <div className="flex-1 px-6 pb-12 flex items-center">
+      <div className={embedded ? 'px-1 pb-4' : 'flex-1 px-6 pb-12 flex items-center'}>
         <div className="w-full max-w-xl mx-auto">
           {error && (
             <div className="glass-card rounded-2xl p-4 mb-4 border-2 border-amber-500/50 flex gap-3">

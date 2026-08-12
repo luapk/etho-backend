@@ -5,6 +5,7 @@ import { PawPrint, ChevronDown, Upload, X, CalendarRange, Settings2,
 import Timeline from './Timeline';
 import PetProfile, { profileCompleteness } from './PetProfile';
 import AnalysisDetail from './AnalysisDetail';
+import Landing from './Landing';
 import { listPets, fetchPetAvatar } from '../api';
 
 /*
@@ -35,7 +36,7 @@ const fmtShort = (iso) =>
 
 export default function PetPage({
   petId, initialTab = 'timeline', openAnalysisId = null,
-  onChangePet, onAddObservation, onOpenVetReport, onManagePets, onPetChanged,
+  onChangePet, onOpenVetReport, onManagePets, onPetChanged, onAnalysisComplete,
 }) {
   const [tab, setTab] = useState(initialTab);
   const [detail, setDetail] = useState(openAnalysisId ? { id: openAnalysisId } : null);
@@ -97,6 +98,11 @@ export default function PetPage({
      way. Resting state is just the timeline. */
   const TABS = [
     { id: 'timeline', label: 'Timeline', icon: CalendarRange },
+    // Adding a capture is part of being on this pet's page, not a trip to
+    // another screen. As a tab it keeps the Etho bar, the portrait and the
+    // way back to the timeline, all of which the standalone page had to
+    // reinvent — and did without, which is why it felt detached.
+    { id: 'add', label: 'Add', icon: Upload },
     ...(tab === 'profile'
       ? [{ id: 'profile', label: 'Profile', icon: Settings2, closable: true,
            onClose: () => setTab('timeline') }]
@@ -193,13 +199,10 @@ export default function PetPage({
               )}
             </div>
 
-            <button
-              onClick={onAddObservation}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/30 hover:bg-white/40 text-white font-roboto font-bold text-sm transition-colors flex-none"
-            >
-              <Upload className="w-4 h-4" />
-              <span className="hidden sm:inline">Add</span>
-            </button>
+            {/* No Add button up here any more. Uploading is a tab now, and a
+                second door to the same room — squeezed against a long pet
+                name on a phone — was only ever a workaround for it not being
+                one. */}
           </div>
 
           {/* Switching pets, not managing them — adding one happens on My pets */}
@@ -272,10 +275,23 @@ export default function PetPage({
           embedded
           refreshKey={reloadKey}
           onOpenVetReport={onOpenVetReport}
-          onUpload={onAddObservation}
+          onUpload={() => setTab('add')}
           onOpenAnalysis={openObservation}
           onChanged={() => { setReloadKey((k) => k + 1); onPetChanged?.(); }}
         />
+      )}
+
+      {tab === 'add' && (
+        <div className="max-w-3xl mx-auto px-4 md:px-6 pb-10">
+          <Landing
+            embedded
+            petId={petId}
+            onChangePet={onChangePet}
+            onAnalysisComplete={onAnalysisComplete}
+            onViewTimeline={() => setTab('timeline')}
+            onManagePets={onManagePets}
+          />
+        </div>
       )}
 
       {tab === 'profile' && (

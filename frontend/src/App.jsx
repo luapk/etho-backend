@@ -243,7 +243,10 @@ function App() {
     ...(activePetId
       ? [{ id: 'pet', label: activePet?.name || 'Your pet', icon: PawPrint }]
       : []),
-    { id: 'landing', label: 'Add an observation', icon: Upload },
+    // With a pet open, adding a capture is a tab on their page rather than a
+    // separate destination. Only someone with no pet at all needs the
+    // standalone screen, and for them it is the first-run question.
+    ...(activePetId ? [] : [{ id: 'landing', label: 'Add an observation', icon: Upload }]),
     { id: 'pets', label: 'All pets', icon: List },
     { divider: true },
     { id: 'about', label: 'Research', icon: Info },
@@ -378,7 +381,7 @@ function App() {
             initialTab={petTab}
             openAnalysisId={openAnalysisId}
             onChangePet={(id) => openPet(id, 'timeline')}
-            onAddObservation={() => navigateTo('landing')}
+            onAnalysisComplete={handleAnalysisComplete}
             onOpenVetReport={openVetReport}
             onManagePets={() => navigateTo('pets')}
             /* The wallpaper flag is read off the pet list, so a profile edit

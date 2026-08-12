@@ -8,6 +8,56 @@ const ZONE_COLORS = {
   inactive: { primary: '#334155', secondary: '#475569' }
 };
 
+/* Whose sound is this?
+ *
+ * Home footage is mostly people talking to the animal, and a human voice is
+ * not evidence about the animal — so it must not be painted in the animal's
+ * distress colours. Only the pet gets green/amber/red. A person is white.
+ * Anything else — another animal, a TV, a sound nobody identified — is a
+ * muted slate, because "we don't know who made this" is its own answer and
+ * it is not the same as "the pet did".
+ *
+ * The backend stamps `source` on every identified vocalization (prompt v6.5)
+ * and resolve_vocal_source() in gemini_service.py fills it in for records
+ * analysed before that. These word lists mirror the Python ones for records
+ * read straight out of full_json here — keep the two in step.
+ */
+export const SOURCE_COLORS = {
+  human: '#f8fafc',       // white: a person, never scored as the animal
+  other: '#94a3b8',       // slate: unidentified, or not this animal
+};
+
+const HUMAN_WORDS = ['human', 'person', 'people', 'owner', 'guardian', 'man', 'woman',
+  'child', 'speech', 'speaking', 'talking', 'voice', 'laugh', 'giggle', 'whistle',
+  'whistling', 'baby talk', 'baby-talk', 'cooing', 'kissing', 'shush', 'calling',
+  'command', 'praise', 'conversation'];
+const PET_WORDS = ['bark', 'woof', 'yip', 'yap', 'howl', 'growl', 'whine', 'whimper',
+  'yelp', 'meow', 'miaow', 'mew', 'purr', 'hiss', 'chirp', 'chatter', 'trill', 'yowl',
+  'caterwaul', 'pant', 'snuffle', 'snort', 'sneeze', 'cough', 'grunt', 'sigh', 'squeak'];
+
+export const resolveSource = (v = {}) => {
+  const declared = String(v.source || '').toLowerCase();
+  if (['pet', 'human', 'other'].includes(declared)) return declared;
+  const text = `${v.type || ''} ${v.subtype || ''} ${v.interpretation || ''}`.toLowerCase();
+  if (HUMAN_WORDS.some((w) => text.includes(w))) return 'human';
+  if (PET_WORDS.some((w) => text.includes(w))) return 'pet';
+  return 'other';   // never 'pet' — crediting an unknown sound to the animal
+};                  // is the fabrication this field exists to prevent
+
+const ZONE_HEX = { green: '#22c55e', yellow: '#f59e0b', red: '#ef4444' };
+
+/** The one place a sound's colour is decided. Exported so the timeline tile's
+ *  mini strip paints from the same rule as the full audio timeline. */
+export const soundColor = (source, zone) =>
+  source === 'pet' ? (ZONE_HEX[zone] || ZONE_HEX.yellow) : SOURCE_COLORS[source || 'other'];
+
+/** Bar gradient pair for the waveform, same rule. */
+const soundColorPair = (source, zone) => {
+  if (source === 'pet') return ZONE_COLORS[zone] || ZONE_COLORS.yellow;
+  if (source === 'human') return { primary: '#f8fafc', secondary: '#e2e8f0' };
+  return { primary: '#94a3b8', secondary: '#cbd5e1' };
+};
+
 // Get zone from vocalization type
 const getVocalizationZone = (type, subtype) => {
   const combined = `${type || ''} ${subtype || ''}`.toLowerCase();
@@ -77,7 +127,9 @@ const fmtClock = (t) => {
   return `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;
 };
 
-function AudioWaveform({ events = [], environmentalSounds = [], duration = 30, currentTime = 0, isPlaying = false, onSeek, videoContext = '', envelope = null, measuredEvents = null }) {
+function AudioWaveform({ events = [], environmentalSounds = [], duration = 30, currentTime = 0, isPlaying = false, onSeek, videoContext = '', envelope = null, measuredEvents = null, species = '' }) {
+  const subjectName = species === 'cat' ? 'The cat' : species === 'dog' ? 'The dog' : 'The pet';
+  const subjectLower = subjectName.toLowerCase();
   
   /* WHEN a sound happened is measured; WHAT it was is identified.
    *
@@ -123,15 +175,20 @@ function AudioWaveform({ events = [], environmentalSounds = [], duration = 30, c
           type: match?.type || 'vocalization',
           subtype: match?.subtype,
           interpretation: match?.interpretation,
+          // No identification landed on this measured sound, so nobody has
+          // said who made it. 'other' keeps it neutral instead of crediting
+          // it to the animal.
+          source: match ? resolveSource(match) : 'other',
           measured: m,
           isMeasured: true,
         };
       });
       // Anything the model heard that no measured event lines up with is still
       // worth listing, but it is flagged as unlocated rather than given a bar.
-      named.filter((n) => !n._used).forEach((n) => combined.push({ ...n, unmatched: true }));
+      named.filter((n) => !n._used).forEach((n) =>
+        combined.push({ ...n, source: resolveSource(n), unmatched: true }));
     } else {
-      combined = [...named];
+      combined = named.map((n) => ({ ...n, source: resolveSource(n) }));
     }
 
     environmentalSounds.forEach((es) => {
@@ -141,6 +198,7 @@ function AudioWaveform({ events = [], environmentalSounds = [], duration = 30, c
         type: 'environmental',
         subtype: es.sound,
         interpretation: es.pet_reaction,
+        source: 'other',
         isEnvironmental: true,
       });
     });
@@ -175,7 +233,11 @@ function AudioWaveform({ events = [], environmentalSounds = [], duration = 30, c
       end,
       label: e.isEnvironmental ? `🔊 ${e.subtype}` : getContextualDescription(e, videoContext),
       interpretation: e.interpretation,
-      zone: e.isEnvironmental ? 'yellow' : getVocalizationZone(e.type, e.subtype),
+      // A zone is a reading of the ANIMAL's state, so only the animal's own
+      // sounds get one. A person's voice and an unidentified noise carry no
+      // zone at all, which is what keeps them out of the distress palette.
+      source: e.source || 'other',
+      zone: e.source === 'pet' ? getVocalizationZone(e.type, e.subtype) : null,
       loudness: e.isEnvironmental ? 0.5 :
                 e.subtype?.toLowerCase().includes('aggressive') ? 1.0 :
                 e.subtype?.toLowerCase().includes('demand') ? 0.85 :
@@ -213,7 +275,9 @@ function AudioWaveform({ events = [], environmentalSounds = [], duration = 30, c
       // Height is amplitude and nothing else. Colour is what the event was.
       const amp = hasReal ? envelope[i] : 0;
       const height = hasReal ? Math.max(2, amp * 92) : 2;
-      const colors = activeEvent ? ZONE_COLORS[activeEvent.zone] : ZONE_COLORS.inactive;
+      const colors = activeEvent
+        ? soundColorPair(activeEvent.source, activeEvent.zone)
+        : ZONE_COLORS.inactive;
       const isActive = Boolean(activeEvent);
 
       bars.push({
@@ -261,23 +325,11 @@ function AudioWaveform({ events = [], environmentalSounds = [], duration = 30, c
 
   const [openRow, setOpenRow] = useState(null);
 
-  // Get unique event types for legend
-  const eventTypes = useMemo(() => {
-    const types = new Map();
-    allEvents.forEach(e => {
-      if (e.isEnvironmental) {
-        if (!types.has('environmental')) {
-          types.set('environmental', 'yellow');
-        }
-      } else {
-        const key = e.subtype || e.type;
-        if (key && !types.has(key)) {
-          types.set(key, getVocalizationZone(e.type, e.subtype));
-        }
-      }
-    });
-    return Array.from(types.entries());
-  }, [allEvents]);
+  // Which of the three sources actually turn up in this clip — the legend
+  // only names the ones on screen.
+  const sourcesPresent = useMemo(
+    () => new Set(allEvents.map((e) => (e.isEnvironmental ? 'other' : (e.source || 'other')))),
+    [allEvents]);
 
   const handleBarClick = (time, event) => {
     if (event && onSeek) onSeek(event.start);
@@ -348,19 +400,27 @@ function AudioWaveform({ events = [], environmentalSounds = [], duration = 30, c
         </p>
       )}
 
-      {/* Legend */}
-      {eventTypes.length > 0 && (
+      {/* Legend.
+          It names WHO, not what. The colour coding is the point of the strip —
+          only this animal's own sounds are in the distress colours — and a
+          colour scheme nobody explains is just decoration. The old legend
+          listed vocalization types against zones, which now says nothing
+          about why a bar is white. */}
+      {allEvents.length > 0 && (
         <div className="flex flex-wrap gap-4 mt-4 pt-3 border-t border-white/10">
-          <div className="flex items-center gap-1.5">
-            <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: ZONE_COLORS.inactive.primary, opacity: 0.4 }} />
-            <span className="font-roboto text-white/40 text-xs">Ambient</span>
-          </div>
-          {eventTypes.map(([type, zone]) => (
-            <div key={type} className="flex items-center gap-1.5">
-              <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: ZONE_COLORS[zone].primary }} />
-              <span className="font-roboto text-white/70 text-xs capitalize">{type.replace(/_/g, ' ')}</span>
-            </div>
-          ))}
+          {[['pet', subjectName, 'green'], ['human', 'A person', null],
+            ['other', 'Other sound', null]]
+            .filter(([src]) => sourcesPresent.has(src))
+            .map(([src, label, zone]) => (
+              <div key={src} className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded-sm"
+                      style={{ backgroundColor: soundColor(src, zone) }} />
+                <span className="font-roboto text-white/70 text-xs">{label}</span>
+              </div>
+            ))}
+          <span className="font-roboto text-white/35 text-xs">
+            Only {subjectLower}'s own sounds are scored.
+          </span>
         </div>
       )}
       
@@ -373,15 +433,16 @@ function AudioWaveform({ events = [], environmentalSounds = [], duration = 30, c
       {grouped.length > 0 && (
         <div className="mt-4 space-y-2">
           {grouped.slice(0, 6).map((event, idx) => {
-            const zone = event.isEnvironmental ? 'yellow' : getVocalizationZone(event.type, event.subtype);
-            const colors = ZONE_COLORS[zone];
+            const src = event.isEnvironmental ? 'other' : (event.source || 'other');
+            const zone = src === 'pet' ? getVocalizationZone(event.type, event.subtype) : null;
+            const railColor = soundColor(src, zone);
             const description = event.isEnvironmental ? `🔊 ${event.subtype}` : getContextualDescription(event, videoContext);
             
             return (
               <div 
                 key={idx}
                 className="flex items-start gap-3 p-3 rounded-lg cursor-pointer hover:bg-white/10 transition-colors"
-                style={{ backgroundColor: 'rgba(255,255,255,0.05)', borderLeft: `3px solid ${colors.primary}` }}
+                style={{ backgroundColor: 'rgba(255,255,255,0.05)', borderLeft: `3px solid ${railColor}` }}
                 onClick={() => onSeek && onSeek(parseTs(event.timestamp_start) || 0)}
               >
                 <span className="font-roboto text-white/50 text-xs font-mono whitespace-nowrap min-w-[40px]">
@@ -446,9 +507,13 @@ function AudioWaveform({ events = [], environmentalSounds = [], duration = 30, c
                     </>
                   )}
                 </div>
-                <span className="px-2 py-0.5 rounded text-xs font-roboto font-medium"
-                  style={{ backgroundColor: `${colors.primary}25`, color: colors.primary }}>
-                  {zone === 'red' ? 'High' : zone === 'yellow' ? 'Med' : 'Low'}
+                {/* A distress reading belongs only to the animal's own sounds.
+                    A person's voice gets named, not graded. */}
+                <span className="px-2 py-0.5 rounded text-xs font-roboto font-medium whitespace-nowrap"
+                  style={{ backgroundColor: `${railColor}25`, color: railColor }}>
+                  {src === 'pet'
+                    ? (zone === 'red' ? 'High' : zone === 'yellow' ? 'Med' : 'Low')
+                    : src === 'human' ? 'Person' : 'Not scored'}
                 </span>
               </div>
             );

@@ -44,7 +44,7 @@ Research foundations:
 
 # Bump when the prompt or output schema changes — logged with every stored
 # analysis so longitudinal records remain comparable across versions.
-PROMPT_VERSION = "6.4"
+PROMPT_VERSION = "6.5"   # 6.5: vocalizations carry `source` (pet/human/other)
 
 ETHOLOGICAL_SYSTEM_PROMPT = """
 # ETHOLOGICAL AI ARCHITECT v6.0 — POSE-GROUNDED DEEP CONTEXTUAL ANALYSIS
@@ -282,6 +282,25 @@ For each key moment, generate a UNIQUE interpretation that:
   *(McComb et al., 2009 — solicitation purr triggers urgency response in humans)*
 - Chirp/chatter: predatory arousal response to prey stimuli
 
+**WHO MADE THE SOUND — set `source` on every vocalization:**
+Home footage is full of people talking to the animal, and a human voice is not
+evidence about the animal. Every entry in `vocalizations_detected` must carry:
+- `"source": "pet"`   — the animal being assessed made this sound
+- `"source": "human"` — a person: speech, laughter, calling the pet's name,
+  baby-talk, whistling, kissing noises, "who's a good boy"
+- `"source": "other"` — another animal, a TV, a phone, anything else
+
+Rules that follow from it, and they are not optional:
+- A `human` sound is NEVER interpreted as the animal's state, never scored on
+  Morton's rules, and never counted as a vocalization by the pet. Describe it
+  only as context — the trigger a sound might be responding TO.
+- Human speech sits roughly 85–255 Hz. If the measurements show a sound in
+  that band and you are about to call it a growl or a whine, check whether it
+  is a person talking. Attributing a human voice to the animal is a
+  fabrication about the patient.
+- When you genuinely cannot tell who made a sound, use `"other"`. Do not
+  default to `pet`.
+
 **Audio-visual alignment (PettiChat principle):**
 Always validate vocalisation interpretation against the VISUAL body posture.
 A whine from a dog in a relaxed body = low-level request.
@@ -384,6 +403,7 @@ If you observe:
             {
                 "timestamp_start": "0:07",
                 "timestamp_end": "0:09",
+                "source": "pet/human/other",
                 "type": "growl",
                 "subtype": "frustration",
                 "interpretation": "Low, sustained — frustration vocalization per Morton's Rules",

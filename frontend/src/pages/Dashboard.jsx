@@ -575,33 +575,54 @@ function IdentityNotice({ check, analysisId }) {
 function PetSpeechBubble({ subtitle }) {
   const color = ZONE_CONFIG[subtitle.zone]?.color || '#e2e8f0';
   return (
-    // Centred with auto margins, not -translate-x-1/2: framer-motion writes its
-    // own inline transform for the entrance, which silently beats a Tailwind
-    // translate class and leaves the bubble hanging off the right of the frame.
+    /* Beside the video, not on top of it.
+     *
+     * A phone clip is 9:16, so on anything wider than a phone the player is a
+     * tall column with empty gutters either side — and a caption sitting over
+     * the footage was both covering the animal and competing with it for
+     * attention, which is how it got lost. In the gutter it has the whole left
+     * column to itself and can be as large as it deserves to be.
+     *
+     * Below the video on a narrow screen, where there is no gutter to move
+     * into. Same bubble, same size rules, just stacked.
+     *
+     * Opaque white with near-black type: the highest-contrast pairing there
+     * is, and it holds at a glance over any footage, in daylight, on a phone.
+     */
     <motion.div
       key={subtitle.key}
-      initial={{ opacity: 0, y: 10, scale: 0.96 }}
+      initial={{ opacity: 0, y: 12, scale: 0.97 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -6, scale: 0.98 }}
+      exit={{ opacity: 0, y: -8, scale: 0.98 }}
       transition={{ duration: 0.22, ease: 'easeOut' }}
-      className="absolute bottom-16 inset-x-0 mx-auto w-[86%] max-w-sm pointer-events-none"
+      className="relative w-full"
     >
-      <div className="relative rounded-2xl px-4 py-3 shadow-[0_10px_28px_rgba(0,0,0,0.55)]"
-           style={{ backgroundColor: BUBBLE_BG }}>
-        <div className="flex items-start gap-2.5">
-          <span className="mt-[6px] w-2.5 h-2.5 rounded-full flex-none ring-2 ring-white/70"
+      <div className="relative rounded-3xl bg-white px-6 py-5 md:px-7 md:py-6
+                      shadow-[0_14px_40px_rgba(0,0,0,0.35)]">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="w-3 h-3 rounded-full flex-none"
                 style={{ backgroundColor: color }} />
-          <p className="font-roboto text-white text-[16px] leading-[1.3] font-bold">
-            {subtitle.text}
-          </p>
+          <span className="font-roboto text-slate-500 text-[11px] font-bold uppercase tracking-wider">
+            {mmss(subtitle.t)} · in their words
+          </span>
         </div>
-        {/* Tail, so it reads as speech rather than as a system message. */}
-        <span className="absolute -bottom-[7px] left-7 w-3.5 h-3.5 rotate-45 rounded-[2px]"
-              style={{ backgroundColor: BUBBLE_BG }} />
+        {/* Sized off the viewport so it stays big without overflowing a small
+            phone. Bottoms out near a headline, tops out around 40px. */}
+        <p className="font-roboto text-slate-900 font-black leading-[1.15]"
+           style={{ fontSize: 'clamp(1.5rem, 4.2vw, 2.5rem)' }}>
+          {subtitle.text}
+        </p>
+        {/* Tail points at the video: right edge on desktop where the bubble
+            sits to the left of the clip, bottom edge when it is stacked under
+            it on a phone. */}
+        <span className="absolute md:hidden left-10 -bottom-2 w-5 h-5 bg-white rotate-45 rounded-[3px]" />
+        <span className="hidden md:block absolute -right-2 top-12 w-5 h-5 bg-white rotate-45 rounded-[3px]" />
       </div>
     </motion.div>
   );
 }
+
+const mmss = (t) => `${Math.floor((t || 0) / 60)}:${String(Math.floor((t || 0) % 60)).padStart(2, '0')}`;
 
 function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, headerNote,
                     embedded = false, mediaNote = null }) {
@@ -919,24 +940,31 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
         )}
         {videoUrl && (
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl overflow-hidden">
-            <div className="relative">
-              {/* A photo analysis has no track to scrub — a <video> tag would
-                  render a blank player, so stills get an <img>. */}
-              {isStill ? (
-                <img src={videoUrl} alt="The analysed photo" className="w-full" style={{ maxHeight: '450px', objectFit: 'contain', backgroundColor: 'rgba(0,0,0,0.3)' }} />
-              ) : (
-                <video ref={videoRef} src={videoUrl} controls className="w-full" style={{ maxHeight: '450px', objectFit: 'contain', backgroundColor: 'rgba(0,0,0,0.3)' }} />
+            {/* Two columns on anything wider than a phone: the bubble in the
+                left gutter, the clip on the right. A phone video is 9:16, so
+                that gutter is dead space the player was never going to use,
+                and the caption gets a column of its own instead of sitting on
+                the animal. One column on a phone, bubble under the clip.
+                The bubble column keeps its width whether or not anyone is
+                speaking, so the video doesn't jump sideways mid-playback. */}
+            <div className="flex flex-col md:flex-row md:items-center gap-3 md:gap-5 p-3 md:p-4">
+              {!isStill && subtitlesEnabled && (
+                <div className="order-2 md:order-1 md:flex-1 md:min-h-[220px] flex items-center">
+                  <AnimatePresence mode="wait">
+                    {currentSubtitle && <PetSpeechBubble subtitle={currentSubtitle} />}
+                  </AnimatePresence>
+                </div>
               )}
-              
-              {/* Timed captions belong to playback. On a still they'd sit
-                  permanently over the animal's face, duplicating the fixed
-                  caption below it. The 'below' style renders outside this
-                  container, so it is not one of the overlays. */}
-              <AnimatePresence mode="wait">
-                {!isStill && subtitlesEnabled && currentSubtitle && (
-                  <PetSpeechBubble subtitle={currentSubtitle} />
+
+              <div className="order-1 md:order-2 md:w-[300px] md:flex-none mx-auto rounded-xl overflow-hidden">
+                {/* A photo analysis has no track to scrub — a <video> tag would
+                    render a blank player, so stills get an <img>. */}
+                {isStill ? (
+                  <img src={videoUrl} alt="The analysed photo" className="w-full" style={{ maxHeight: '450px', objectFit: 'contain', backgroundColor: 'rgba(0,0,0,0.3)' }} />
+                ) : (
+                  <video ref={videoRef} src={videoUrl} controls className="w-full" style={{ maxHeight: '450px', objectFit: 'contain', backgroundColor: 'rgba(0,0,0,0.3)' }} />
                 )}
-              </AnimatePresence>
+              </div>
             </div>
             
             {/* Caption controls: on/off, then how they look.
@@ -1255,7 +1283,7 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
             <h2 className="font-roboto font-bold text-xl text-white flex items-center gap-2"><Volume2 className="w-5 h-5 text-white/70" />Audio Analysis</h2>
             {expandedSections.audio ? <ChevronUp className="w-5 h-5 text-white/50" /> : <ChevronDown className="w-5 h-5 text-white/50" />}
           </button>
-          {expandedSections.audio && <div className="px-6 pb-6"><AudioWaveform events={audio_analysis?.vocalizations_detected || []} environmentalSounds={audio_analysis?.environmental_sounds || []} duration={analysisData._audio_metrics?.duration_analyzed_sec || duration || 17} currentTime={currentTime} isPlaying={isPlaying} onSeek={handleMarkerClick} videoContext={video_context} envelope={analysisData._audio_metrics?.envelope} measuredEvents={analysisData._audio_metrics?.vocalization_events} /></div>}
+          {expandedSections.audio && <div className="px-6 pb-6"><AudioWaveform events={audio_analysis?.vocalizations_detected || []} environmentalSounds={audio_analysis?.environmental_sounds || []} duration={analysisData._audio_metrics?.duration_analyzed_sec || duration || 17} currentTime={currentTime} isPlaying={isPlaying} onSeek={handleMarkerClick} videoContext={video_context} envelope={analysisData._audio_metrics?.envelope} measuredEvents={analysisData._audio_metrics?.vocalization_events} species={species} /></div>}
         </motion.div>
         )}
 

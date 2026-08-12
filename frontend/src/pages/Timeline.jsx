@@ -6,6 +6,7 @@ import { AlertTriangle, FileText, Scale, Video, Image as ImageIcon,
          Wind, TrendingUp, TrendingDown, Minus, Plus, Camera, Check, Trash2 } from 'lucide-react';
 import { getTimeline, getTrends, getPet, addWeight, fetchPoster, getCapturePlan,
          updatePet, deleteAnalysis, friendlyError } from '../api';
+import { soundColor } from '../components/AudioWaveform';
 
 /*
  * The longitudinal view — the reason the record layer exists.
@@ -95,7 +96,7 @@ function Sparkline({ curve }) {
  *  the amplitude envelope, with a tick where each vocalization was measured.
  *  Two strips sharing an axis answer "was it noisy when they were tense?" —
  *  which neither strip answers alone. */
-function AudioStrip({ envelope, events, durationSec, present, eventCount }) {
+function AudioStrip({ envelope, events, durationSec, present, eventCount, zone }) {
   const W = 180, H = 18;
 
   /* Four distinct states, and they must not be confused with each other.
@@ -122,9 +123,15 @@ function AudioStrip({ envelope, events, durationSec, present, eventCount }) {
   if (present === null || present === undefined) return <div className="h-5" />;
 
   const dur = durationSec || Math.max(1, ...(events || []).map((e) => e.t_sec || 0)) || 1;
+  /* Same colour rule as the full audio timeline, from the same function:
+     only THIS animal's sounds are in the distress colours, a person is white,
+     and anything unidentified is slate. A tile that coloured a human voice as
+     the pet's distress would be telling a different story from the screen it
+     opens into. */
   const ticks = (events || []).map((e, i) => (
     <circle key={i} cx={Math.min(W - 2, Math.max(2, (e.t_sec / dur) * W))} cy={H - 2} r="2"
-            fill="#38bdf8" stroke="rgba(255,255,255,0.85)" strokeWidth="0.5" />
+            fill={soundColor(e.source, zone)}
+            stroke="rgba(0,0,0,0.35)" strokeWidth="0.5" />
   ));
 
   if (envelope?.length) {
@@ -562,6 +569,7 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                         </div>
                         <Sparkline curve={item.distress_curve} />
                         <AudioStrip
+                          zone={item.zone}
                           envelope={item.audio_envelope}
                           events={item.vocal_events}
                           durationSec={item.audio_duration_sec}

@@ -131,7 +131,26 @@ from app.prompts.ethological_prompt import ETHOLOGICAL_SYSTEM_PROMPT, PROMPT_VER
 from app.services import video_annotator, vet_report as vr
 
 check("prompt asks for evidence timestamps", "evidence_timestamp" in ETHOLOGICAL_SYSTEM_PROMPT)
-check("prompt version bumped", PROMPT_VERSION == "6.4", PROMPT_VERSION)
+# Pinned to a floor, not an exact string: every legitimate prompt edit bumps
+# this, and a test that fails on the bump teaches people to edit the test.
+check("prompt version is at or past the source-labelling release",
+      tuple(int(x) for x in PROMPT_VERSION.split(".")) >= (6, 5), PROMPT_VERSION)
+
+# Human speech in the room is not evidence about the animal. The model has to
+# say who made each sound, or a person talking gets scored as the pet.
+check("prompt asks who made each sound", '"source": "pet/human/other"' in ETHOLOGICAL_SYSTEM_PROMPT)
+check("prompt forbids scoring a human voice as the animal",
+      "never counted as a vocalization by the pet" in ETHOLOGICAL_SYSTEM_PROMPT)
+check("prompt refuses to default an unknown sound to the pet",
+      "Do not" in ETHOLOGICAL_SYSTEM_PROMPT and "default to `pet`" in ETHOLOGICAL_SYSTEM_PROMPT)
+
+from app.services.gemini_service import resolve_vocal_source as _src
+check("an explicit human label is honoured", _src({"source": "human"}) == "human")
+check("owner talking is read as human", _src({"type": "speech", "subtype": "owner talking"}) == "human")
+check("a meow is read as the pet", _src({"type": "meow"}) == "pet")
+check("an unrecognised sound is never credited to the pet",
+      _src({"type": "clatter"}) == "other")
+check("a bogus source falls back to the text", _src({"source": "cat", "type": "bark"}) == "pet")
 check("draw threshold stricter than metrics", video_annotator.DRAW_CONF > 0.3)
 check("spine bands", video_annotator._spine_band(3) == "relaxed"
       and video_annotator._spine_band(20) == "moderate"

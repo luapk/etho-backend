@@ -616,6 +616,55 @@ def _ts_to_seconds(ts) -> float:
 # Buckets in the per-tile audio miniature. A filmstrip tile is ~200px wide.
 _FEED_ENVELOPE_POINTS = 48
 
+# How close an identification has to be to a measured sound to be talking about
+# it. The model reads timestamps to roughly this resolution; the DSP's are
+# exact. Mirrors the same window in AudioWaveform.jsx.
+_FEED_MATCH_WINDOW_SEC = 2.0
+
+
+def _feed_vocal_events(am: dict, result: dict) -> list:
+    """Measured sounds for the tile strip, each carrying WHO made it.
+
+    When a sound happened is measured; who made it is identified. So the
+    measured events are the spine, and Gemini's identifications are matched
+    onto the nearest one in time — the same join the observation view does, run
+    here as well so the tile and the detail view cannot end up disagreeing
+    about which ticks are the pet and which are a person.
+    """
+    from .gemini_service import resolve_vocal_source
+
+    named = []
+    for v in ((result.get("audio_analysis") or {}).get("vocalizations_detected") or []):
+        if not isinstance(v, dict):
+            continue
+        named.append({"t": _ts_to_seconds(v.get("timestamp_start")),
+                      "source": resolve_vocal_source(v),
+                      "used": False})
+
+    out = []
+    for ev in (am.get("vocalization_events") or []):
+        t = ev.get("timestamp_sec")
+        if t is None:
+            continue
+        best, gap = None, _FEED_MATCH_WINDOW_SEC
+        for n in named:
+            if n["used"]:
+                continue
+            d = abs(n["t"] - t)
+            if d <= gap:
+                best, gap = n, d
+        if best:
+            best["used"] = True
+        out.append({
+            "t_sec": t,
+            "pitch_hz": ev.get("pitch_hz"),
+            "tonality": ev.get("tonality"),
+            # None, not "pet": nothing identified this sound, and the tile
+            # draws that as neutral rather than crediting it to the animal.
+            "source": best["source"] if best else None,
+        })
+    return out
+
 
 def get_timeline_feed(pet_id: str, limit: int = 200) -> list:
     """One chronological feed merging analyses and weight entries, built for
@@ -653,11 +702,7 @@ def get_timeline_feed(pet_id: str, limit: int = 200) -> list:
             mini = [round(max(env[int(i * step):max(int((i + 1) * step), int(i * step) + 1)]), 2)
                     for i in range(n)]
         audio_dur = am.get("duration_analyzed_sec")
-        vocal = [{"t_sec": ev.get("timestamp_sec"),
-                  "pitch_hz": ev.get("pitch_hz"),
-                  "tonality": ev.get("tonality")}
-                 for ev in (am.get("vocalization_events") or [])
-                 if ev.get("timestamp_sec") is not None]
+        vocal = _feed_vocal_events(am, result)
 
         items.append({
             "type": "analysis",
