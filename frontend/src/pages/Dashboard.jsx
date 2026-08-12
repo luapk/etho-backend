@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Volume2, Eye, ChevronDown, ChevronUp, Download, AlertTriangle, MessageCircle, BookOpen, Subtitles, Lightbulb, Info, X, Sparkles, Volume1, VolumeX, CalendarRange, Camera, Ruler, Wind, Activity as ActivityIcon, ChevronLeft } from 'lucide-react';
+import { Volume2, Eye, ChevronDown, ChevronUp, Download, AlertTriangle, MessageCircle, BookOpen, Subtitles, Lightbulb, Info, X, Sparkles, CalendarRange, Camera, Ruler, Wind, Activity as ActivityIcon, ChevronLeft } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceArea } from 'recharts';
 import AudioWaveform from '../components/AudioWaveform';
 import Footer from '../components/Footer';
@@ -383,6 +383,127 @@ const MarkerInfoModal = ({ marker, onClose }) => {
   );
 };
 
+/* ── Pet captions: three presentations, on audition ────────────────────────
+ *
+ * The old caption was white text on a zone-tinted panel — white on amber is
+ * roughly 2:1 contrast, which fails at any size and fails hardest on the
+ * phone, in daylight, over moving footage, which is the entire use case. It
+ * was also 14px and italic, and italic costs legibility at small sizes for
+ * nothing in return.
+ *
+ * So the zone stops being the background colour. It is carried by a rail, a
+ * border or a dot, and the text sits on a fixed high-contrast ground in every
+ * style. Three genuinely different answers:
+ *
+ *   card    white on near-black, zone as a colour rail. Familiar as a caption,
+ *           safest over unpredictable footage, smallest footprint.
+ *   bubble  near-black on white with a tail. Highest contrast of the three and
+ *           it says "the animal is speaking" without a word of chrome — but a
+ *           white panel glares on a dark clip and it covers more of the frame.
+ *   below   under the video, never over it. Nothing is ever hidden behind the
+ *           words — including the animal, which is what you came to look at —
+ *           at the cost of splitting your attention off the picture.
+ *
+ * Whichever the guardian picks is remembered, because a caption preference is
+ * about their eyes, not about this clip.
+ */
+const CAPTION_STYLES = [
+  { id: 'card',   label: 'Card' },
+  { id: 'bubble', label: 'Bubble' },
+  { id: 'below',  label: 'Below' },
+];
+const CAPTION_STYLE_KEY = 'etho.captionStyle';
+
+// Mirrors _UNNAMED in video_annotator.py — the values a model returns when it
+// won't commit to a breed. None of them belong on screen as if they were one.
+const UNNAMED_BREEDS = new Set(['unknown', 'unclear', 'unidentified', 'n/a', 'na',
+  'none', 'mixed', 'mixed breed', 'not determined', 'indeterminate']);
+
+function readCaptionStyle() {
+  try {
+    const saved = localStorage.getItem(CAPTION_STYLE_KEY);
+    if (CAPTION_STYLES.some((s) => s.id === saved)) return saved;
+  } catch { /* private mode */ }
+  return 'card';
+}
+
+const captionMotion = {
+  initial: { opacity: 0, y: 8 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: -6 },
+  transition: { duration: 0.22, ease: 'easeOut' },
+};
+
+/** Styles 'card' and 'bubble' — these overlay the video. */
+function CaptionOverlay({ subtitle, styleId }) {
+  const color = ZONE_CONFIG[subtitle.zone]?.color || '#e2e8f0';
+
+  // Both overlays centre with auto margins, not -translate-x-1/2:
+  // framer-motion writes its own inline transform for the entrance, which
+  // silently wins over a Tailwind translate class and leaves the caption
+  // hanging off the right edge of the frame.
+  if (styleId === 'bubble') {
+    return (
+      <motion.div key={subtitle.key} {...captionMotion}
+        className="absolute bottom-16 inset-x-0 mx-auto w-[86%] max-w-sm pointer-events-none">
+        <div className="relative rounded-2xl bg-white px-4 py-3 shadow-[0_10px_28px_rgba(0,0,0,0.5)]">
+          <div className="flex items-start gap-2.5">
+            <span className="mt-[7px] w-2.5 h-2.5 rounded-full flex-none"
+                  style={{ backgroundColor: color }} />
+            <p className="font-roboto text-slate-900 text-[15px] leading-[1.35] font-medium">
+              {subtitle.text}
+            </p>
+          </div>
+          {/* Tail, so it reads as speech rather than as a system message. */}
+          <span className="absolute -bottom-[7px] left-7 w-3.5 h-3.5 bg-white rotate-45 rounded-[2px]" />
+        </div>
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.div key={subtitle.key} {...captionMotion}
+      className="absolute bottom-14 inset-x-0 mx-auto w-[88%] max-w-md pointer-events-none">
+      <div className="flex items-stretch rounded-xl overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
+           style={{ backgroundColor: 'rgba(9,12,20,0.9)' }}>
+        <span className="w-1.5 flex-none" style={{ backgroundColor: color }} />
+        <p className="px-3.5 py-2.5 font-roboto text-white text-[15px] leading-[1.35] font-medium">
+          {subtitle.text}
+        </p>
+      </div>
+    </motion.div>
+  );
+}
+
+/** Style 'below' — its own strip under the frame. Fixed height whether or not
+ *  a line is showing, so the page doesn't jump every few seconds. */
+function CaptionStrip({ subtitle, playing }) {
+  const color = subtitle ? (ZONE_CONFIG[subtitle.zone]?.color || '#e2e8f0') : 'rgba(255,255,255,0.2)';
+  const mmss = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+  return (
+    <div className="px-4 py-3 border-t border-white/10 min-h-[68px] flex items-center gap-3">
+      <span className="w-1 self-stretch rounded-full flex-none" style={{ backgroundColor: color }} />
+      <AnimatePresence mode="wait">
+        {subtitle ? (
+          <motion.p key={subtitle.key} {...captionMotion}
+                    className="font-roboto text-white text-[15px] leading-[1.35] font-medium flex-1">
+            {subtitle.text}
+          </motion.p>
+        ) : (
+          <p key="idle" className="font-roboto text-white/35 text-sm flex-1">
+            {playing ? 'Nothing to read here.' : 'Play the clip to read along.'}
+          </p>
+        )}
+      </AnimatePresence>
+      {subtitle && (
+        <span className="font-roboto text-white/40 text-[11px] tabular-nums flex-none">
+          {mmss(subtitle.t)}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, headerNote,
                     embedded = false, mediaNote = null }) {
   const [expandedSections, setExpandedSections] = useState({ audio: true, interpret: true, didyouknow: true, research: false });
@@ -390,13 +511,16 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
-  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [captionStyle, setCaptionStyle] = useState(readCaptionStyle);
   const [currentSubtitle, setCurrentSubtitle] = useState(null);
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
   const [showDistressInfo, setShowDistressInfo] = useState(false);
   const [selectedMarker, setSelectedMarker] = useState(null);
   const videoRef = useRef(null);
-  const speechSynthRef = useRef(null);
+
+  useEffect(() => {
+    try { localStorage.setItem(CAPTION_STYLE_KEY, captionStyle); } catch { /* private mode */ }
+  }, [captionStyle]);
 
   // Photos are analysed as a single moment: no playback, no track to scrub, no
   // audio, no sequence. Half this screen is built around a clip, and showing
@@ -412,25 +536,13 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
       ? mediaType === 'image'
       : (analysisData?.timeline?.length === 1 && !analysisData?._audio_metrics?.audio_present);
 
-  // Text-to-speech
-  const speak = useCallback((text) => {
-    if (!audioEnabled || !window.speechSynthesis) return;
-    
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.9;
-    utterance.pitch = 1.1;
-    utterance.volume = 0.8;
-    window.speechSynthesis.speak(utterance);
-  }, [audioEnabled]);
-
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
     const onTime = () => setCurrentTime(v.currentTime);
     const onDur = () => setDuration(v.duration);
     const onPlay = () => setIsPlaying(true);
-    const onPause = () => { setIsPlaying(false); window.speechSynthesis?.cancel(); };
+    const onPause = () => setIsPlaying(false);
     v.addEventListener('timeupdate', onTime);
     v.addEventListener('durationchange', onDur);
     v.addEventListener('play', onPlay);
@@ -458,22 +570,21 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
         // Use AI-generated interpretation directly - no client-side override
         const petPovText = getPetPovText(line);
         
-        const newSubtitle = { 
+        const newSubtitle = {
           text: petPovText,
           zone,
+          t: lineTime,
           key: `${lineTime}-${i}`
         };
-        
-        // Only update if different (prevents re-speaking)
+
         if (!currentSubtitle || currentSubtitle.key !== newSubtitle.key) {
           setCurrentSubtitle(newSubtitle);
-          speak(petPovText);
         }
         return;
       }
     }
     setCurrentSubtitle(null);
-  }, [currentTime, subtitlesEnabled, analysisData, speak]);
+  }, [currentTime, subtitlesEnabled, analysisData]);
 
   const handleMarkerClick = useCallback((t) => { if (videoRef.current) { videoRef.current.currentTime = t; videoRef.current.play(); } }, []);
 
@@ -698,7 +809,10 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
 
   const breedFact = useMemo(() => getBreedFact(breed_detected, species), [breed_detected, species]);
   const breedDisplay = useMemo(() => {
-    if (!breed_detected) return null;
+    // "unknown (22% confident)" is not a breed line, it's a bug wearing one.
+    // The model declines to name a breed often, and when it does the honest
+    // move is to print nothing rather than the word "unknown".
+    if (!breed_detected || UNNAMED_BREEDS.has(String(breed_detected).trim().toLowerCase())) return null;
     const conf = breed_confidence || visual_analysis?.breed_confidence;
     return conf ? `${breed_detected} (${typeof conf === 'number' ? Math.round(conf*100)+'%' : conf} confident)` : breed_detected;
   }, [breed_detected, breed_confidence, visual_analysis]);
@@ -739,42 +853,30 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
                 <video ref={videoRef} src={videoUrl} controls className="w-full" style={{ maxHeight: '450px', objectFit: 'contain', backgroundColor: 'rgba(0,0,0,0.3)' }} />
               )}
               
-              {/* Enhanced subtitle - black bg, colored border, 30% bigger */}
+              {/* Timed captions belong to playback. On a still they'd sit
+                  permanently over the animal's face, duplicating the fixed
+                  caption below it. The 'below' style renders outside this
+                  container, so it is not one of the overlays. */}
               <AnimatePresence mode="wait">
-                {/* Timed captions belong to playback. On a still they'd sit
-                    permanently over the animal's face, duplicating the fixed
-                    caption below it. */}
-                {!isStill && subtitlesEnabled && currentSubtitle && (
-                  <motion.div 
-                    key={currentSubtitle.key}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    transition={{ duration: 0.3, ease: 'easeOut' }}
-                    className="absolute bottom-16 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg max-w-[80%] text-center"
-                    style={{ 
-                      backgroundColor: 'rgba(0,0,0,0.85)',
-                      border: `2px solid ${ZONE_CONFIG[currentSubtitle.zone]?.color || '#fff'}`,
-                      boxShadow: `0 0 20px ${ZONE_CONFIG[currentSubtitle.zone]?.color}40`
-                    }}
-                  >
-                    <p className="font-roboto text-white text-sm font-medium italic">
-                      "{currentSubtitle.text}"
-                    </p>
-                  </motion.div>
+                {!isStill && subtitlesEnabled && currentSubtitle && captionStyle !== 'below' && (
+                  <CaptionOverlay subtitle={currentSubtitle} styleId={captionStyle} />
                 )}
               </AnimatePresence>
             </div>
+
+            {!isStill && subtitlesEnabled && captionStyle === 'below' && (
+              <CaptionStrip subtitle={currentSubtitle} playing={isPlaying} />
+            )}
             
-            {/* Playback options.
-                Two labelled pills rather than a switch and a bare icon. The
-                switch was a 44x24 track, and index.css floors every button on
-                mobile at 44x44 for tap targets — so it inflated into a teal
-                circle with the knob stranded in the corner. A control whose
-                shape depends on not colliding with a global rule is the wrong
-                control; these read the same at any size and say what they do
-                and whether they are on, instead of leaving a slider position
-                to be interpreted.
+            {/* Caption controls: on/off, then how they look.
+                The pill states its own state in words. It replaced a 44x24
+                switch, which index.css inflated into a teal circle with the
+                knob stranded in the corner because every button on mobile is
+                floored at 44x44 — a control whose shape depends on not
+                colliding with a global rule is the wrong control.
+                Read-aloud is gone: a synthetic voice putting words in the
+                animal's mouth overstates what an interpretation is, and it
+                fought the clip's own audio, which is evidence.
                 A still has nothing to sync captions to, so its single POV line
                 is a fixed caption below the image instead. */}
             {!isStill ? (
@@ -797,23 +899,25 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
                 </span>
               </button>
 
-              <button
-                onClick={() => setAudioEnabled(!audioEnabled)}
-                aria-pressed={audioEnabled}
-                className={`flex items-center gap-2 pl-3 pr-3.5 py-2 rounded-xl font-roboto text-sm transition-colors ${
-                  audioEnabled
-                    ? 'bg-cyan-400/25 text-white ring-1 ring-cyan-300/60'
-                    : 'bg-white/10 text-white/60 hover:bg-white/20'
-                }`}
-              >
-                {audioEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-                <span className="font-medium">Read aloud</span>
-                <span className={`text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
-                  audioEnabled ? 'bg-cyan-300/30 text-cyan-100' : 'bg-white/10 text-white/45'
-                }`}>
-                  {audioEnabled ? 'On' : 'Off'}
-                </span>
-              </button>
+              {subtitlesEnabled && (
+                <div className="flex items-center gap-1 rounded-xl bg-white/10 p-1"
+                     role="group" aria-label="Caption style">
+                  {CAPTION_STYLES.map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => setCaptionStyle(s.id)}
+                      aria-pressed={captionStyle === s.id}
+                      className={`tap-compact px-3 py-1.5 rounded-lg font-roboto text-xs font-bold transition-colors ${
+                        captionStyle === s.id
+                          ? 'bg-white/85 text-slate-900'
+                          : 'text-white/60 hover:text-white hover:bg-white/10'
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               <span className="font-roboto text-white/35 text-xs ml-auto hidden sm:block">
                 What they'd be saying, as the clip plays

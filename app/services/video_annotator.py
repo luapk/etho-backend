@@ -3,7 +3,8 @@ Video annotation service.
 
 Renders a copy of the input video with:
   - Colour-coded bounding box per detected pet (green/yellow/red = distress zone)
-  - Breed + confidence tag on the box
+  - Two-line tag on the box: what the animal is doing (AI reading, from the
+    timeline entry in force) over what was detected and how sure (measured)
   - YOLO skeleton overlay (keypoints + connections)
   - Spinal-angle readout when available
   - Persistent timeline event text (top strip) — updates at each Gemini event
@@ -73,16 +74,113 @@ def _ui_scale(frame) -> float:
     return max(0.6, frame.shape[0] / 720.0)
 
 
-def _bbox(frame, bbox, color, label: str):
+_UNNAMED = {"", "unknown", "unclear", "unidentified", "n/a", "na", "none",
+            "mixed", "mixed breed", "not determined", "indeterminate"}
+
+
+def _subject_tag(analysis: dict) -> str:
+    """What the DETECTOR is looking at, in words that are always true.
+
+    The box used to be captioned with `breed_detected`, which is "unknown"
+    whenever the model won't commit to a breed — so the one overlay that
+    proves the tool actually found the animal was labelled "unknown 22%".
+    The species is never unknown (YOLO detects by class, that is what put the
+    box there); the breed is printed only when there is one to print.
+    """
+    species = str(analysis.get("species") or "").strip().lower()
+    subject = {"cat": "Cat", "dog": "Dog"}.get(species, "Pet")
+    breed = str(analysis.get("breed_detected") or "").strip()
+    if breed.lower() in _UNNAMED:
+        return subject
+    if subject.lower() in breed.lower():
+        return breed
+    return f"{breed} {subject.lower()}"
+
+
+_STATE_MAX_WORDS = 5
+_STATE_MAX_CHARS = 30
+
+
+def _state_phrase(event: Optional[dict]) -> str:
+    """A few words for what the animal is doing at this moment, taken from the
+    timeline entry in force on this frame.
+
+    A breed name never changes across a clip, so it told the viewer nothing
+    about the footage they were watching. What the animal is doing does change,
+    and it is the thing the box is drawn around.
+
+    Gemini returns these as sentences, so this takes the first clause and caps
+    it — a caption that outgrows the box it labels is worse than no caption.
+    """
+    if not event:
+        return ""
+    raw = str(event.get("pet_state") or event.get("event_description") or "").strip()
+    if not raw:
+        return ""
+    for sep in ("—", " - ", ";", ",", ". "):
+        if sep in raw:
+            raw = raw.split(sep)[0]
+            break
+    raw = raw.rstrip(" .").strip()
+    words = raw.split()
+    cut = len(words) > _STATE_MAX_WORDS
+    if cut:
+        raw = " ".join(words[:_STATE_MAX_WORDS])
+    if len(raw) > _STATE_MAX_CHARS:
+        raw, cut = raw[:_STATE_MAX_CHARS].rstrip(), True
+    if cut:
+        # Say it was cut. A phrase that stops mid-thought without a mark reads
+        # as the model's whole reading rather than the front of it.
+        raw += "..."
+    # Hershey fonts are ASCII-only; anything else renders as '?'.
+    raw = raw.encode("ascii", "ignore").decode()
+    return raw[:1].upper() + raw[1:]
+
+
+def _bbox(frame, bbox, color, state: str, measured: str):
+    """Box plus a two-line caption, and the two lines are deliberately unequal:
+
+        line 1   what the animal is DOING   (AI reading — larger)
+        line 2   what was DETECTED, and how sure   (measured — smaller, greyed)
+
+    Never merged into one string. The box itself is a measurement, and printing
+    a behaviour word in the same weight as a detection confidence would let the
+    estimate borrow the detector's authority — the one rule this codebase keeps
+    everywhere else.
+    """
     u = _ui_scale(frame)
     th_line = max(2, int(2 * u))
     x1, y1, x2, y2 = map(int, bbox)
     cv2.rectangle(frame, (x1, y1), (x2, y2), color, th_line)
-    fs = 0.52 * u
-    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, fs, 1)
-    cv2.rectangle(frame, (x1, y1 - th - int(8 * u)), (x1 + tw + int(6 * u), y1), color, -1)
-    cv2.putText(frame, label, (x1 + int(3 * u), y1 - int(4 * u)),
-                cv2.FONT_HERSHEY_SIMPLEX, fs, _BLACK, 1, cv2.LINE_AA)
+
+    fs1, fs2 = 0.52 * u, 0.38 * u
+    pad = int(4 * u)
+    (w1, h1), _ = cv2.getTextSize(state, cv2.FONT_HERSHEY_SIMPLEX, fs1, 1) if state else ((0, 0), 0)
+    (w2, h2), _ = cv2.getTextSize(measured, cv2.FONT_HERSHEY_SIMPLEX, fs2, 1)
+    gap = int(3 * u) if state else 0
+    chip_w = max(w1, w2) + pad * 2
+    chip_h = (h1 + gap if state else 0) + h2 + pad * 2
+
+    # Above the box by default; tucked inside its top edge when the animal is
+    # framed against the top of the shot and there is no room outside.
+    top = y1 - chip_h
+    if top < 0:
+        top = min(y1, frame.shape[0] - chip_h)
+    cv2.rectangle(frame, (x1, top), (x1 + chip_w, top + chip_h), color, -1)
+
+    y = top + pad
+    if state:
+        y += h1
+        cv2.putText(frame, state, (x1 + pad, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, fs1, _BLACK, 1, cv2.LINE_AA)
+        y += gap
+    y += h2
+    # Both lines in black: the hierarchy is carried by size, not by fading one
+    # of them out. Grey text on the red zone chip was the least legible thing
+    # on the frame, and it was the measured line — the one that should never be
+    # the hardest to read.
+    cv2.putText(frame, measured, (x1 + pad, y),
+                cv2.FONT_HERSHEY_SIMPLEX, fs2, _BLACK, 1, cv2.LINE_AA)
 
 
 def _skeleton(frame, keypoints):
@@ -263,7 +361,7 @@ def annotate_video(video_path: str, pose_frames: list, analysis: dict) -> Option
     fourcc     = cv2.VideoWriter_fourcc(*"mp4v")
     writer     = cv2.VideoWriter(raw_path, fourcc, fps, (width, height))
 
-    breed    = analysis.get("breed_detected", "Pet")
+    subject  = _subject_tag(analysis)
     default_d = analysis.get("overall_assessment", {}).get("distress_score", 50)
     default_z = analysis.get("overall_assessment", {}).get("zone", "yellow")
 
@@ -275,6 +373,12 @@ def annotate_video(video_path: str, pose_frames: list, analysis: dict) -> Option
     cur_event_text = ""
     cur_pov_text   = ""
     cur_zone       = default_z
+    # The box caption before the first timeline entry lands: the overall
+    # body-language reading, so the box says something about the animal from
+    # frame one rather than waiting several seconds to acquire a phrase.
+    cur_state      = _state_phrase(
+        {"pet_state": analysis.get("visual_analysis", {}).get("body_language", "")}
+    )
     # ~1.5s rolling mean stabilises the on-screen spine number; the raw
     # per-sample values still feed the stored metrics untouched.
     spine_window = deque(maxlen=max(2, int(1.5 * 5)))
@@ -295,6 +399,7 @@ def annotate_video(video_path: str, pose_frames: list, analysis: dict) -> Option
                 ev = event_lut[frame_idx]
                 cur_event_text = ev.get("event_description", "")
                 cur_zone = ev.get("zone", zone)
+                cur_state = _state_phrase(ev) or cur_state
             if frame_idx in pov_lut and pov_lut[frame_idx]:
                 cur_pov_text = f'"{pov_lut[frame_idx]}"'
 
@@ -302,8 +407,8 @@ def annotate_video(video_path: str, pose_frames: list, analysis: dict) -> Option
             pf = pose_track.get(frame_idx)
             if pf:
                 for animal in pf.animals:
-                    label = f"{breed} {animal.confidence:.0%}"
-                    _bbox(frame, animal.bbox, color, label)
+                    _bbox(frame, animal.bbox, color, cur_state,
+                          f"{subject} detected {animal.confidence:.0%}")
                     _skeleton(frame, animal.keypoints)
                     if animal.spinal_angle is not None:
                         spine_window.append(animal.spinal_angle)
@@ -493,11 +598,18 @@ def annotate_image(image_path: str, pose_frames: list, analysis: dict) -> Option
     score = oa.get("distress_score", 50)
     zone = oa.get("zone", "yellow")
     color = _zone_color(zone)
-    breed = analysis.get("breed_detected", "Pet")
+    subject = _subject_tag(analysis)
+    # A still has one moment, so its caption is the single timeline entry's
+    # state — falling back to the overall body-language reading.
+    tl = analysis.get("timeline") or []
+    state = _state_phrase(tl[0] if tl else None) or _state_phrase(
+        {"pet_state": analysis.get("visual_analysis", {}).get("body_language", "")}
+    )
 
     if pose_frames and pose_frames[0].animals:
         for animal in pose_frames[0].animals:
-            _bbox(frame, animal.bbox, color, f"{breed} {animal.confidence:.0%}")
+            _bbox(frame, animal.bbox, color, state,
+                  f"{subject} detected {animal.confidence:.0%}")
             _skeleton(frame, animal.keypoints)
             if animal.spinal_angle is not None:
                 _spinal_readout(frame, animal.spinal_angle)
