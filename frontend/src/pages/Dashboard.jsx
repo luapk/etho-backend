@@ -714,88 +714,13 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
     } finally { setIsGeneratingPDF(false); }
   };
 
-  return (
-    <div className="min-h-screen">
-      <DistressInfoModal isOpen={showDistressInfo} onClose={() => setShowDistressInfo(false)} />
-      <AnimatePresence>
-        {selectedMarker && <MarkerInfoModal marker={selectedMarker} onClose={() => setSelectedMarker(null)} />}
-      </AnimatePresence>
-      {/* Inside a pet tab the logo lockup is already on screen twice over, so
-          embedded mode keeps only the date line. */}
-      {embedded ? (
-        headerNote && (
-          <div className="max-w-5xl mx-auto px-6 pt-5">
-            <p className="font-roboto text-white/55 text-sm">{headerNote}</p>
-          </div>
-        )
-      ) : (
-        <header className="py-6 px-6"><div className="max-w-5xl mx-auto flex flex-col items-center">
-          <img src="/etho-logo.png" alt="Etho" className="h-10" onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }} />
-          <span className="font-roboto font-bold text-3xl text-white hidden">Etho</span>
-          <p className="font-roboto text-white/60 text-sm mt-2">
-            {headerNote || 'AI-powered pet behavior analysis'}
-          </p>
-        </div></header>
-      )}
-
-      {!embedded && onBack && (
-        <div className="max-w-5xl mx-auto px-6 -mt-2 mb-2">
-          <button
-            onClick={onBack}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl glass-card hover:bg-white/25 text-white font-roboto font-medium transition-colors"
-          >
-            <ChevronLeft className="w-4 h-4" /> Back to timeline
-          </button>
-        </div>
-      )}
-
-      <div className="max-w-5xl mx-auto px-6 pb-12 space-y-6">
-        {/* Saved to a pet's record — the bridge to the longitudinal view */}
-        {savedToPet && onViewTimeline && (
-          <motion.button
-            initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
-            onClick={onViewTimeline}
-            className="w-full glass-card rounded-2xl p-4 flex items-center gap-3 hover:bg-white/25 transition-colors text-left"
-          >
-            <CalendarRange className="w-5 h-5 text-white flex-none" />
-            <div className="flex-1">
-              <p className="font-roboto font-bold text-white text-sm">Saved to their record</p>
-              <p className="font-roboto text-white/60 text-xs">
-                See how this compares to their usual — tap for the timeline
-              </p>
-            </div>
-            <span className="font-roboto text-white/70 text-sm">→</span>
-          </motion.button>
-        )}
-
-        {/* How to get a better reading next time — feedback, never a gate */}
-        {captureQuality?.advice?.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-            className="glass-card rounded-2xl p-5"
-          >
-            <div className="flex items-center gap-2 mb-2">
-              <Camera className="w-5 h-5 text-white/70" />
-              <h2 className="font-roboto font-bold text-white">
-                For an even better reading next time
-              </h2>
-              <span className="ml-auto font-roboto text-white/50 text-xs capitalize">
-                {captureQuality.grade} quality
-              </span>
-            </div>
-            <ul className="space-y-1.5">
-              {captureQuality.advice.map((a, i) => (
-                <li key={i} className="font-roboto text-white/80 text-sm flex gap-2">
-                  <span className="text-white/40">•</span>{a}
-                </li>
-              ))}
-            </ul>
-            <p className="font-roboto text-white/45 text-xs mt-3">
-              We analysed this clip regardless — quality is guidance, not a gate.
-            </p>
-          </motion.div>
-        )}
-
+  /* In the observation view the clip is the point: you opened a date to look
+     at what happened, so it goes first and the reading of it goes directly
+     underneath. On a fresh upload the running order is different — the score
+     is the headline there — so both blocks are hoisted into variables and
+     placed rather than duplicated. */
+  const mediaSection = (
+    <>
         {/* Video with enhanced subtitles */}
         {!videoUrl && mediaNote && (
           <div className="glass-card rounded-2xl p-6 text-center">
@@ -883,6 +808,137 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
             ) : null}
           </motion.div>
         )}
+
+    </>
+  );
+
+  const insightSection = (
+    <>
+        {/* Scientific Insight - Expectation Analysis */}
+        {analysisData?.expectation_analysis && (
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.52 }} className="glass-card rounded-2xl p-6">
+            <h2 className="font-roboto font-bold text-xl text-white flex items-center gap-2 mb-4">
+              <BookOpen className="w-5 h-5 text-cyan-400" />
+              Scientific Insight
+            </h2>
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="p-4 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.05)' }}>
+                  <p className="text-white/50 text-xs uppercase tracking-wider mb-1">Pet's Expectation</p>
+                  <p className="text-white text-sm">{analysisData.expectation_analysis.pet_expectation}</p>
+                </div>
+                <div className="p-4 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.05)' }}>
+                  <p className="text-white/50 text-xs uppercase tracking-wider mb-1">Actual Outcome</p>
+                  <p className="text-white text-sm">{analysisData.expectation_analysis.actual_outcome}</p>
+                </div>
+              </div>
+              {analysisData.expectation_analysis.emotional_response && (
+                <div className="p-4 rounded-xl border-l-4" style={{ 
+                  backgroundColor: 'rgba(255,255,255,0.03)', 
+                  borderColor: analysisData.expectation_analysis.match_type === 'exceeded' ? '#22c55e' : 
+                               analysisData.expectation_analysis.match_type === 'met' ? '#22c55e' :
+                               analysisData.expectation_analysis.match_type === 'fell_short' ? '#f59e0b' : '#ef4444'
+                }}>
+                  <p className="text-white/50 text-xs uppercase tracking-wider mb-1">Emotional Response</p>
+                  <p className="text-white text-sm">{analysisData.expectation_analysis.emotional_response}</p>
+                </div>
+              )}
+              {analysisData.scene_understanding?.narrative && (
+                <p className="text-white/60 text-sm italic mt-2">{analysisData.scene_understanding.narrative}</p>
+              )}
+            </div>
+          </motion.div>
+        )}
+
+    </>
+  );
+
+  return (
+    <div className="min-h-screen">
+      <DistressInfoModal isOpen={showDistressInfo} onClose={() => setShowDistressInfo(false)} />
+      <AnimatePresence>
+        {selectedMarker && <MarkerInfoModal marker={selectedMarker} onClose={() => setSelectedMarker(null)} />}
+      </AnimatePresence>
+      {/* Inside a pet tab the logo lockup is already on screen twice over, so
+          embedded mode keeps only the date line. */}
+      {embedded ? (
+        headerNote && (
+          <div className="max-w-5xl mx-auto px-6 pt-5">
+            <p className="font-roboto text-white/55 text-sm">{headerNote}</p>
+          </div>
+        )
+      ) : (
+        <header className="py-6 px-6"><div className="max-w-5xl mx-auto flex flex-col items-center">
+          <img src="/etho-logo.png" alt="Etho" className="h-10" onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }} />
+          <span className="font-roboto font-bold text-3xl text-white hidden">Etho</span>
+          <p className="font-roboto text-white/60 text-sm mt-2">
+            {headerNote || 'AI-powered pet behavior analysis'}
+          </p>
+        </div></header>
+      )}
+
+      {!embedded && onBack && (
+        <div className="max-w-5xl mx-auto px-6 -mt-2 mb-2">
+          <button
+            onClick={onBack}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl glass-card hover:bg-white/25 text-white font-roboto font-medium transition-colors"
+          >
+            <ChevronLeft className="w-4 h-4" /> Back to timeline
+          </button>
+        </div>
+      )}
+
+      <div className="max-w-5xl mx-auto px-6 pb-12 space-y-6">
+        {embedded && mediaSection}
+        {embedded && insightSection}
+
+        {/* Saved to a pet's record — the bridge to the longitudinal view */}
+        {savedToPet && onViewTimeline && (
+          <motion.button
+            initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}
+            onClick={onViewTimeline}
+            className="w-full glass-card rounded-2xl p-4 flex items-center gap-3 hover:bg-white/25 transition-colors text-left"
+          >
+            <CalendarRange className="w-5 h-5 text-white flex-none" />
+            <div className="flex-1">
+              <p className="font-roboto font-bold text-white text-sm">Saved to their record</p>
+              <p className="font-roboto text-white/60 text-xs">
+                See how this compares to their usual — tap for the timeline
+              </p>
+            </div>
+            <span className="font-roboto text-white/70 text-sm">→</span>
+          </motion.button>
+        )}
+
+        {/* How to get a better reading next time — feedback, never a gate */}
+        {captureQuality?.advice?.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+            className="glass-card rounded-2xl p-5"
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <Camera className="w-5 h-5 text-white/70" />
+              <h2 className="font-roboto font-bold text-white">
+                For an even better reading next time
+              </h2>
+              <span className="ml-auto font-roboto text-white/50 text-xs capitalize">
+                {captureQuality.grade} quality
+              </span>
+            </div>
+            <ul className="space-y-1.5">
+              {captureQuality.advice.map((a, i) => (
+                <li key={i} className="font-roboto text-white/80 text-sm flex gap-2">
+                  <span className="text-white/40">•</span>{a}
+                </li>
+              ))}
+            </ul>
+            <p className="font-roboto text-white/45 text-xs mt-3">
+              We analysed this clip regardless — quality is guidance, not a gate.
+            </p>
+          </motion.div>
+        )}
+
+        {!embedded && mediaSection}
 
         {/* Inter-species Warning Banner */}
         {analysisData?._interaction_type === 'inter_species' && (
@@ -1057,41 +1113,7 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
           </motion.div>
         )}
 
-        {/* Scientific Insight - Expectation Analysis */}
-        {analysisData?.expectation_analysis && (
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.52 }} className="glass-card rounded-2xl p-6">
-            <h2 className="font-roboto font-bold text-xl text-white flex items-center gap-2 mb-4">
-              <BookOpen className="w-5 h-5 text-cyan-400" />
-              Scientific Insight
-            </h2>
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="p-4 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.05)' }}>
-                  <p className="text-white/50 text-xs uppercase tracking-wider mb-1">Pet's Expectation</p>
-                  <p className="text-white text-sm">{analysisData.expectation_analysis.pet_expectation}</p>
-                </div>
-                <div className="p-4 rounded-xl" style={{ backgroundColor: 'rgba(255,255,255,0.05)' }}>
-                  <p className="text-white/50 text-xs uppercase tracking-wider mb-1">Actual Outcome</p>
-                  <p className="text-white text-sm">{analysisData.expectation_analysis.actual_outcome}</p>
-                </div>
-              </div>
-              {analysisData.expectation_analysis.emotional_response && (
-                <div className="p-4 rounded-xl border-l-4" style={{ 
-                  backgroundColor: 'rgba(255,255,255,0.03)', 
-                  borderColor: analysisData.expectation_analysis.match_type === 'exceeded' ? '#22c55e' : 
-                               analysisData.expectation_analysis.match_type === 'met' ? '#22c55e' :
-                               analysisData.expectation_analysis.match_type === 'fell_short' ? '#f59e0b' : '#ef4444'
-                }}>
-                  <p className="text-white/50 text-xs uppercase tracking-wider mb-1">Emotional Response</p>
-                  <p className="text-white text-sm">{analysisData.expectation_analysis.emotional_response}</p>
-                </div>
-              )}
-              {analysisData.scene_understanding?.narrative && (
-                <p className="text-white/60 text-sm italic mt-2">{analysisData.scene_understanding.narrative}</p>
-              )}
-            </div>
-          </motion.div>
-        )}
+        {!embedded && insightSection}
 
         {/* Did You Know */}
         {breedFact && (

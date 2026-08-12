@@ -139,7 +139,7 @@ export default function AnalysisDetail({ analysisId, onBack, embedded = false,
         + `or it has been cleared to make room. Everything measured from it is kept.`;
 
   const dateBlock = (
-    <div className={`max-w-5xl mx-auto px-6 ${embedded ? 'pt-4' : 'pt-2'}`}>
+    <div className="max-w-5xl mx-auto px-6 pt-2 pb-4">
       {editingDate ? (
         <div className="glass-card rounded-2xl p-4 flex flex-wrap items-center gap-2">
           <CalendarDays className="w-4 h-4 text-white/70 flex-none" />
@@ -251,7 +251,6 @@ export default function AnalysisDetail({ analysisId, onBack, embedded = false,
 
   return (
     <>
-      {dateBlock}
       <Dashboard
         analysisData={record.full_json}
         videoUrl={mediaUrl}
@@ -261,6 +260,7 @@ export default function AnalysisDetail({ analysisId, onBack, embedded = false,
         embedded={embedded}
         headerNote={embedded ? null : petName || null}
       />
+      {dateBlock}
       {deleteBlock}
     </>
   );
