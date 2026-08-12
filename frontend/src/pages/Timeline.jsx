@@ -354,8 +354,162 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
           </div>
         ) : (
           <>
-            {/* The one-sentence answer to "is my pet okay?", before any number */}
-            {reading?.detail && (
+            {/* Life captures — first on the page.
+                This is the record. The statistics underneath describe it, but
+                the pictures ARE it, and a guardian opening their pet's page
+                wants to see their animal before they see a standard
+                deviation. */}
+            <div>
+              <div className="flex items-baseline justify-between mb-2 px-1">
+                <h2 className="font-roboto font-bold text-white">Life captures</h2>
+                <span className="font-roboto text-white/50 text-xs">Scroll · tap for detail</span>
+              </div>
+              {/* Why a filmstrip with no pictures. Media storage arrived after
+                  the first releases, so early records are text-only and always
+                  will be — the media was never kept. Saying so beats leaving a
+                  row of grey placeholders to be interpreted as a bug. */}
+              {analyses.length > 0 && !analyses.some((a) => a.has_poster) && (
+                <p className="font-roboto text-white/45 text-xs mb-2 px-1">
+                  These observations were recorded before Etho started keeping
+                  the pictures, so there's nothing to show for them. New uploads
+                  will appear here with their thumbnails.
+                </p>
+              )}
+
+              <div className="flex gap-3 overflow-x-auto pb-3 scroll-container">
+                {items.map((item, idx) => {
+                  if (item.type === 'weight') {
+                    return (
+                      <div
+                        key={`w${idx}`}
+                        className="flex-none w-24 rounded-2xl border border-dashed border-white/40 bg-white/5 flex flex-col items-center justify-center p-3 gap-1"
+                      >
+                        <Scale className="w-4 h-4 text-white/60" />
+                        <span className="font-roboto font-black text-white">{item.weight_kg}<span className="text-xs font-bold"> kg</span></span>
+                        <span className="font-roboto text-white/50 text-[11px]">{fmtDate(item.date)}</span>
+                      </div>
+                    );
+                  }
+                  const z = ZONE[item.zone] || ZONE.yellow;
+                  const pendingDelete = deleting === item.analysis_id;
+                  return (
+                    <div key={item.analysis_id || idx} className="relative flex-none w-52">
+                    {/* Delete lives on the tile, but never inside the
+                        tap-to-open target: a separate button in the corner,
+                        and the confirmation covers the tile so the answer
+                        cannot be mis-tapped either. */}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setDeleting(item.analysis_id); }}
+                      aria-label="Delete this observation"
+                      className="tap-compact absolute bottom-1 right-1 z-10 flex items-center justify-center text-white/45 hover:text-red-300 drop-shadow-[0_1px_3px_rgba(0,0,0,0.55)] transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+
+                    {pendingDelete && (
+                      <div className="absolute inset-0 z-20 rounded-2xl bg-slate-900/85 backdrop-blur-sm flex flex-col items-center justify-center gap-2 p-3 text-center">
+                        <p className="font-roboto text-white text-xs">
+                          Delete this {item.media_type === 'image' ? 'photo' : 'clip'} and
+                          everything measured from it?
+                        </p>
+                        <p className="font-roboto text-white/55 text-[10px]">
+                          {pet?.name}'s trend is worked out again without it.
+                        </p>
+                        <div className="flex gap-2 mt-1">
+                          <button
+                            onClick={() => removeObservation(item.analysis_id)}
+                            disabled={busyDelete}
+                            className="px-3 py-1.5 rounded-lg bg-red-500/85 hover:bg-red-500 disabled:opacity-50 text-white font-roboto text-xs font-bold"
+                          >
+                            {busyDelete ? 'Deleting…' : 'Delete'}
+                          </button>
+                          <button
+                            onClick={() => setDeleting(null)}
+                            className="px-3 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-white font-roboto text-xs"
+                          >
+                            Keep
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* h-full so the card fills its wrapper. The wrapper is a
+                        stretched flex item as tall as the tallest tile in the
+                        row; without it a short tile's card stops early and the
+                        corner delete button lands on the background below the
+                        card instead of inside the tile. */}
+                    <button
+                      onClick={() => onOpenAnalysis?.(item.analysis_id, item.date)}
+                      className="w-full h-full glass-card rounded-2xl overflow-hidden text-left transition-all hover:bg-white/25 focus:outline-none focus:ring-2 focus:ring-white"
+                    >
+                      <Poster
+                        analysisId={item.analysis_id}
+                        available={item.has_poster}
+                        mediaType={item.media_type}
+                        zoneColor={z.color}
+                      />
+                      <div className="p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-roboto text-white/70 text-xs font-bold">
+                            {fmtDate(item.date)}
+                          </span>
+                          <ZoneBadge score={item.distress_score} zone={item.zone} />
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-roboto font-black text-white text-xl">
+                            {item.distress_score}
+                            <span className="text-xs font-bold text-white/50">/100</span>
+                          </span>
+                          <span className="flex items-center gap-1 text-white/60">
+                            {item.media_type === 'image'
+                              ? <ImageIcon className="w-3.5 h-3.5" />
+                              : <Video className="w-3.5 h-3.5" />}
+                            {item.srr_bpm && (
+                              <span className="flex items-center gap-0.5 text-[11px]">
+                                <Wind className="w-3 h-3" />{item.srr_bpm}
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                        <Sparkline curve={item.distress_curve} />
+                        <AudioStrip
+                          zone={item.zone}
+                          envelope={item.audio_envelope}
+                          events={item.vocal_events}
+                          durationSec={item.audio_duration_sec}
+                          present={item.audio_present}
+                          eventCount={item.audio_event_count}
+                        />
+                        <div className="flex flex-wrap gap-1 pr-7">
+                          {item.context && (
+                            <span className="px-1.5 py-0.5 rounded bg-white/15 border border-white/20 text-white/80 text-[10px] font-bold capitalize">
+                              {item.context.replace(/_/g, ' ')}
+                            </span>
+                          )}
+                          {item.quality_grade && item.quality_grade !== 'good' && (
+                            <span className="px-1.5 py-0.5 rounded bg-white/15 border border-white/20 text-white/70 text-[10px] font-bold">
+                              {item.quality_grade} quality
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* The one-sentence answer to "is my pet okay?" — but only when the
+                answer is something other than "fine".
+                For a settled pet this card said "Settled / all observations sit
+                in their calm range" directly above a Direction tile reading
+                "Settled" and a normal tile reading "within their usual range":
+                three ways of saying nothing has happened, which trains a
+                guardian to skim past the row. When the reading has actually
+                earned concern it says something the tiles cannot, so it stays
+                for those. */}
+            {reading?.detail && reading.tone !== 'calm' && (
               <motion.div
                 initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
                 className="glass-card rounded-2xl p-5"
@@ -515,147 +669,6 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
               </div>
             )}
 
-            {/* Capture filmstrip */}
-            <div>
-              <div className="flex items-baseline justify-between mb-2 px-1">
-                <h2 className="font-roboto font-bold text-white">Every capture</h2>
-                <span className="font-roboto text-white/50 text-xs">Scroll · tap for detail</span>
-              </div>
-              {/* Why a filmstrip with no pictures. Media storage arrived after
-                  the first releases, so early records are text-only and always
-                  will be — the media was never kept. Saying so beats leaving a
-                  row of grey placeholders to be interpreted as a bug. */}
-              {analyses.length > 0 && !analyses.some((a) => a.has_poster) && (
-                <p className="font-roboto text-white/45 text-xs mb-2 px-1">
-                  These observations were recorded before Etho started keeping
-                  the pictures, so there's nothing to show for them. New uploads
-                  will appear here with their thumbnails.
-                </p>
-              )}
-
-              <div className="flex gap-3 overflow-x-auto pb-3 scroll-container">
-                {items.map((item, idx) => {
-                  if (item.type === 'weight') {
-                    return (
-                      <div
-                        key={`w${idx}`}
-                        className="flex-none w-24 rounded-2xl border border-dashed border-white/40 bg-white/5 flex flex-col items-center justify-center p-3 gap-1"
-                      >
-                        <Scale className="w-4 h-4 text-white/60" />
-                        <span className="font-roboto font-black text-white">{item.weight_kg}<span className="text-xs font-bold"> kg</span></span>
-                        <span className="font-roboto text-white/50 text-[11px]">{fmtDate(item.date)}</span>
-                      </div>
-                    );
-                  }
-                  const z = ZONE[item.zone] || ZONE.yellow;
-                  const pendingDelete = deleting === item.analysis_id;
-                  return (
-                    <div key={item.analysis_id || idx} className="relative flex-none w-52">
-                    {/* Delete lives on the tile, but never inside the
-                        tap-to-open target: a separate button in the corner,
-                        and the confirmation covers the tile so the answer
-                        cannot be mis-tapped either. */}
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setDeleting(item.analysis_id); }}
-                      aria-label="Delete this observation"
-                      className="tap-compact absolute bottom-1 right-1 z-10 flex items-center justify-center text-white/45 hover:text-red-300 drop-shadow-[0_1px_3px_rgba(0,0,0,0.55)] transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-
-                    {pendingDelete && (
-                      <div className="absolute inset-0 z-20 rounded-2xl bg-slate-900/85 backdrop-blur-sm flex flex-col items-center justify-center gap-2 p-3 text-center">
-                        <p className="font-roboto text-white text-xs">
-                          Delete this {item.media_type === 'image' ? 'photo' : 'clip'} and
-                          everything measured from it?
-                        </p>
-                        <p className="font-roboto text-white/55 text-[10px]">
-                          {pet?.name}'s trend is worked out again without it.
-                        </p>
-                        <div className="flex gap-2 mt-1">
-                          <button
-                            onClick={() => removeObservation(item.analysis_id)}
-                            disabled={busyDelete}
-                            className="px-3 py-1.5 rounded-lg bg-red-500/85 hover:bg-red-500 disabled:opacity-50 text-white font-roboto text-xs font-bold"
-                          >
-                            {busyDelete ? 'Deleting…' : 'Delete'}
-                          </button>
-                          <button
-                            onClick={() => setDeleting(null)}
-                            className="px-3 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-white font-roboto text-xs"
-                          >
-                            Keep
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* h-full so the card fills its wrapper. The wrapper is a
-                        stretched flex item as tall as the tallest tile in the
-                        row; without it a short tile's card stops early and the
-                        corner delete button lands on the background below the
-                        card instead of inside the tile. */}
-                    <button
-                      onClick={() => onOpenAnalysis?.(item.analysis_id, item.date)}
-                      className="w-full h-full glass-card rounded-2xl overflow-hidden text-left transition-all hover:bg-white/25 focus:outline-none focus:ring-2 focus:ring-white"
-                    >
-                      <Poster
-                        analysisId={item.analysis_id}
-                        available={item.has_poster}
-                        mediaType={item.media_type}
-                        zoneColor={z.color}
-                      />
-                      <div className="p-3 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-roboto text-white/70 text-xs font-bold">
-                            {fmtDate(item.date)}
-                          </span>
-                          <ZoneBadge score={item.distress_score} zone={item.zone} />
-                        </div>
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-roboto font-black text-white text-xl">
-                            {item.distress_score}
-                            <span className="text-xs font-bold text-white/50">/100</span>
-                          </span>
-                          <span className="flex items-center gap-1 text-white/60">
-                            {item.media_type === 'image'
-                              ? <ImageIcon className="w-3.5 h-3.5" />
-                              : <Video className="w-3.5 h-3.5" />}
-                            {item.srr_bpm && (
-                              <span className="flex items-center gap-0.5 text-[11px]">
-                                <Wind className="w-3 h-3" />{item.srr_bpm}
-                              </span>
-                            )}
-                          </span>
-                        </div>
-                        <Sparkline curve={item.distress_curve} />
-                        <AudioStrip
-                          zone={item.zone}
-                          envelope={item.audio_envelope}
-                          events={item.vocal_events}
-                          durationSec={item.audio_duration_sec}
-                          present={item.audio_present}
-                          eventCount={item.audio_event_count}
-                        />
-                        <div className="flex flex-wrap gap-1 pr-7">
-                          {item.context && (
-                            <span className="px-1.5 py-0.5 rounded bg-white/15 border border-white/20 text-white/80 text-[10px] font-bold capitalize">
-                              {item.context.replace(/_/g, ' ')}
-                            </span>
-                          )}
-                          {item.quality_grade && item.quality_grade !== 'good' && (
-                            <span className="px-1.5 py-0.5 rounded bg-white/15 border border-white/20 text-white/70 text-[10px] font-bold">
-                              {item.quality_grade} quality
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
 
             {/* Trend over time */}
             <div className="glass-card rounded-2xl p-5">
