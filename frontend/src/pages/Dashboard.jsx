@@ -575,48 +575,46 @@ function IdentityNotice({ check, analysisId }) {
 function PetSpeechBubble({ subtitle }) {
   const color = ZONE_CONFIG[subtitle.zone]?.color || '#e2e8f0';
   return (
-    /* Beside the video, not on top of it.
+    /* Beside the clip, never on it.
      *
-     * A phone clip is 9:16, so on anything wider than a phone the player is a
-     * tall column with empty gutters either side — and a caption sitting over
-     * the footage was both covering the animal and competing with it for
-     * attention, which is how it got lost. In the gutter it has the whole left
-     * column to itself and can be as large as it deserves to be.
+     * A phone video is 9:16, so on anything wider than a phone the player is a
+     * tall column with empty gutters either side. The bubble lives in the
+     * right-hand gutter; the clip stays dead centre whether or not anyone is
+     * speaking (see the three-column grid in mediaSection), because a video
+     * that slides sideways every time a caption opens is worse than a caption
+     * that is slightly off to one side.
      *
-     * Below the video on a narrow screen, where there is no gutter to move
-     * into. Same bubble, same size rules, just stacked.
+     * Below the clip on a narrow screen, where there is no gutter to move into.
      *
-     * Opaque white with near-black type: the highest-contrast pairing there
-     * is, and it holds at a glance over any footage, in daylight, on a phone.
+     * Opaque white with near-black type: the highest-contrast pairing there is,
+     * and it holds at a glance over any footage, in daylight, on a phone.
      */
     <motion.div
       key={subtitle.key}
-      initial={{ opacity: 0, y: 12, scale: 0.97 }}
+      initial={{ opacity: 0, y: 10, scale: 0.97 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -8, scale: 0.98 }}
+      exit={{ opacity: 0, y: -6, scale: 0.98 }}
       transition={{ duration: 0.22, ease: 'easeOut' }}
       className="relative w-full"
     >
-      <div className="relative rounded-3xl bg-white px-6 py-5 md:px-7 md:py-6
-                      shadow-[0_14px_40px_rgba(0,0,0,0.35)]">
-        <div className="flex items-center gap-2 mb-2">
-          <span className="w-3 h-3 rounded-full flex-none"
+      <div className="relative rounded-2xl bg-white px-4 py-3.5
+                      shadow-[0_10px_28px_rgba(0,0,0,0.32)]">
+        <div className="flex items-center gap-1.5 mb-1">
+          <span className="w-2 h-2 rounded-full flex-none"
                 style={{ backgroundColor: color }} />
-          <span className="font-roboto text-slate-500 text-[11px] font-bold uppercase tracking-wider">
+          <span className="font-roboto text-slate-500 text-[10px] font-bold uppercase tracking-wider">
             {mmss(subtitle.t)} · in their words
           </span>
         </div>
-        {/* Sized off the viewport so it stays big without overflowing a small
-            phone. Bottoms out near a headline, tops out around 40px. */}
-        <p className="font-roboto text-slate-900 font-black leading-[1.15]"
-           style={{ fontSize: 'clamp(1.5rem, 4.2vw, 2.5rem)' }}>
+        {/* Sized off the viewport so it never overflows a narrow gutter. */}
+        <p className="font-roboto text-slate-900 font-black leading-[1.2]"
+           style={{ fontSize: 'clamp(0.95rem, 2.1vw, 1.25rem)' }}>
           {subtitle.text}
         </p>
-        {/* Tail points at the video: right edge on desktop where the bubble
-            sits to the left of the clip, bottom edge when it is stacked under
-            it on a phone. */}
-        <span className="absolute md:hidden left-10 -bottom-2 w-5 h-5 bg-white rotate-45 rounded-[3px]" />
-        <span className="hidden md:block absolute -right-2 top-12 w-5 h-5 bg-white rotate-45 rounded-[3px]" />
+        {/* The tail points back at the clip: left edge in the right-hand
+            gutter, top edge when the bubble is stacked underneath on a phone. */}
+        <span className="absolute md:hidden left-8 -top-1.5 w-3.5 h-3.5 bg-white rotate-45 rounded-[2px]" />
+        <span className="hidden md:block absolute -left-1.5 top-8 w-3.5 h-3.5 bg-white rotate-45 rounded-[2px]" />
       </div>
     </motion.div>
   );
@@ -940,23 +938,16 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
         )}
         {videoUrl && (
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl overflow-hidden">
-            {/* Two columns on anything wider than a phone: the bubble in the
-                left gutter, the clip on the right. A phone video is 9:16, so
-                that gutter is dead space the player was never going to use,
-                and the caption gets a column of its own instead of sitting on
-                the animal. One column on a phone, bubble under the clip.
-                The bubble column keeps its width whether or not anyone is
-                speaking, so the video doesn't jump sideways mid-playback. */}
-            <div className="flex flex-col md:flex-row md:items-center gap-3 md:gap-5 p-3 md:p-4">
-              {!isStill && subtitlesEnabled && (
-                <div className="order-2 md:order-1 md:flex-1 md:min-h-[220px] flex items-center">
-                  <AnimatePresence mode="wait">
-                    {currentSubtitle && <PetSpeechBubble subtitle={currentSubtitle} />}
-                  </AnimatePresence>
-                </div>
-              )}
+            {/* Three columns on anything wider than a phone: an empty gutter,
+                the clip, then the bubble. The two gutters are 1fr each, so the
+                clip sits dead centre and STAYS there whether or not anyone is
+                speaking — a video that slides sideways every time a caption
+                opens is worse than a caption slightly off to one side.
+                One column on a phone: clip, then bubble beneath it. */}
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] md:items-center gap-3 md:gap-5 p-3 md:p-4">
+              <div className="hidden md:block" aria-hidden="true" />
 
-              <div className="order-1 md:order-2 md:w-[300px] md:flex-none mx-auto rounded-xl overflow-hidden">
+              <div className="md:col-start-2 mx-auto w-full max-w-[300px] rounded-xl overflow-hidden">
                 {/* A photo analysis has no track to scrub — a <video> tag would
                     render a blank player, so stills get an <img>. */}
                 {isStill ? (
@@ -965,6 +956,14 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
                   <video ref={videoRef} src={videoUrl} controls className="w-full" style={{ maxHeight: '450px', objectFit: 'contain', backgroundColor: 'rgba(0,0,0,0.3)' }} />
                 )}
               </div>
+
+              {!isStill && subtitlesEnabled && (
+                <div className="md:col-start-3 flex items-center md:max-w-sm">
+                  <AnimatePresence mode="wait">
+                    {currentSubtitle && <PetSpeechBubble subtitle={currentSubtitle} />}
+                  </AnimatePresence>
+                </div>
+              )}
             </div>
             
             {/* Caption controls: on/off, then how they look.
