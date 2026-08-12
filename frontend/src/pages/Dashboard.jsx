@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Volume2, Eye, ChevronDown, ChevronUp, Download, AlertTriangle, MessageCircle, BookOpen, Subtitles, Lightbulb, Info, X, Sparkles, Volume1, VolumeX, CalendarRange, Camera, Ruler, Wind, Activity as ActivityIcon, ChevronLeft } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceArea } from 'recharts';
 import AudioWaveform from '../components/AudioWaveform';
 import Footer from '../components/Footer';
 import RatingWidget from '../components/RatingWidget';
@@ -912,16 +912,21 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
             <h2 className="font-roboto font-bold text-xl text-white flex items-center gap-2"><Eye className="w-5 h-5 text-white/70" />Visual Analysis</h2>
             <span className="text-xs text-white/50">Click markers to jump</span>
           </div>
+          {/* The zone bands are ReferenceAreas, in DATA coordinates.
+              They used to be three flex-1 divs filling the container, which
+              put them in a different coordinate space from the line: the plot
+              area is inset by the chart margins and the height of the x-axis,
+              so the stripes sat roughly 20% lower than the values they claimed
+              to mark. That is why a green dot could appear inside the amber
+              band — the dot was right and the background was wrong. */}
           <div className="relative h-48 rounded-xl overflow-hidden" style={{ backgroundColor: 'rgba(255,255,255,0.05)' }}>
-            <div className="absolute inset-0 flex flex-col">
-              <div className="flex-1" style={{ backgroundColor: 'rgba(239,68,68,0.15)' }}></div>
-              <div className="flex-1" style={{ backgroundColor: 'rgba(245,158,11,0.15)' }}></div>
-              <div className="flex-1" style={{ backgroundColor: 'rgba(34,197,94,0.15)' }}></div>
-            </div>
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 15, right: 15, left: -20, bottom: 5 }}>
+              <LineChart data={chartData} margin={{ top: 15, right: 15, left: 0, bottom: 5 }}>
+                <ReferenceArea y1={0} y2={33} fill="#22c55e" fillOpacity={0.16} />
+                <ReferenceArea y1={33} y2={66} fill="#f59e0b" fillOpacity={0.16} />
+                <ReferenceArea y1={66} y2={100} fill="#ef4444" fillOpacity={0.16} />
                 <XAxis dataKey="time" stroke="rgba(255,255,255,0.4)" fontSize={11} tickLine={false} axisLine={false} interval="preserveStartEnd" />
-                <YAxis domain={[0, 100]} stroke="rgba(255,255,255,0.4)" fontSize={11} tickLine={false} axisLine={false} ticks={[0, 33, 66, 100]} width={30} />
+                <YAxis domain={[0, 100]} stroke="rgba(255,255,255,0.4)" fontSize={11} tickLine={false} axisLine={false} ticks={[0, 33, 66, 100]} width={32} />
                 <Tooltip content={<CustomTooltip />} />
                 <Line type="monotone" dataKey="score" stroke="#1e293b" strokeWidth={2.5} dot={(p) => <MarkerDot {...p} onClick={handleMarkerClick} />} activeDot={false} />
               </LineChart>

@@ -356,6 +356,94 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
               </motion.div>
             )}
 
+            {/* Capture filmstrip */}
+            <div>
+              <div className="flex items-baseline justify-between mb-2 px-1">
+                <h2 className="font-roboto font-bold text-white">Every capture</h2>
+                <span className="font-roboto text-white/50 text-xs">Scroll · tap for detail</span>
+              </div>
+              {/* Why a filmstrip with no pictures. Media storage arrived after
+                  the first releases, so early records are text-only and always
+                  will be — the media was never kept. Saying so beats leaving a
+                  row of grey placeholders to be interpreted as a bug. */}
+              {analyses.length > 0 && !analyses.some((a) => a.has_poster) && (
+                <p className="font-roboto text-white/45 text-xs mb-2 px-1">
+                  These observations were recorded before Etho started keeping
+                  the pictures, so there's nothing to show for them. New uploads
+                  will appear here with their thumbnails.
+                </p>
+              )}
+
+              <div className="flex gap-3 overflow-x-auto pb-3 scroll-container">
+                {items.map((item, idx) => {
+                  if (item.type === 'weight') {
+                    return (
+                      <div
+                        key={`w${idx}`}
+                        className="flex-none w-24 rounded-2xl border border-dashed border-white/40 bg-white/5 flex flex-col items-center justify-center p-3 gap-1"
+                      >
+                        <Scale className="w-4 h-4 text-white/60" />
+                        <span className="font-roboto font-black text-white">{item.weight_kg}<span className="text-xs font-bold"> kg</span></span>
+                        <span className="font-roboto text-white/50 text-[11px]">{fmtDate(item.date)}</span>
+                      </div>
+                    );
+                  }
+                  const z = ZONE[item.zone] || ZONE.yellow;
+                  return (
+                    <button
+                      key={item.analysis_id || idx}
+                      onClick={() => onOpenAnalysis?.(item.analysis_id, item.date)}
+                      className="flex-none w-52 glass-card rounded-2xl overflow-hidden text-left transition-all hover:bg-white/25 focus:outline-none focus:ring-2 focus:ring-white"
+                    >
+                      <Poster
+                        analysisId={item.analysis_id}
+                        available={item.has_poster}
+                        mediaType={item.media_type}
+                        zoneColor={z.color}
+                      />
+                      <div className="p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-roboto text-white/70 text-xs font-bold">
+                            {fmtDate(item.date)}
+                          </span>
+                          <ZoneBadge score={item.distress_score} zone={item.zone} />
+                        </div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-roboto font-black text-white text-xl">
+                            {item.distress_score}
+                            <span className="text-xs font-bold text-white/50">/100</span>
+                          </span>
+                          <span className="flex items-center gap-1 text-white/60">
+                            {item.media_type === 'image'
+                              ? <ImageIcon className="w-3.5 h-3.5" />
+                              : <Video className="w-3.5 h-3.5" />}
+                            {item.srr_bpm && (
+                              <span className="flex items-center gap-0.5 text-[11px]">
+                                <Wind className="w-3 h-3" />{item.srr_bpm}
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                        <Sparkline curve={item.distress_curve} />
+                        <div className="flex flex-wrap gap-1">
+                          {item.context && (
+                            <span className="px-1.5 py-0.5 rounded bg-white/15 border border-white/20 text-white/80 text-[10px] font-bold capitalize">
+                              {item.context.replace(/_/g, ' ')}
+                            </span>
+                          )}
+                          {item.quality_grade && item.quality_grade !== 'good' && (
+                            <span className="px-1.5 py-0.5 rounded bg-white/15 border border-white/20 text-white/70 text-[10px] font-bold">
+                              {item.quality_grade} quality
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* Trend over time */}
             <div className="glass-card rounded-2xl p-5">
               <div className="flex items-baseline justify-between mb-1 flex-wrap gap-2">
@@ -460,94 +548,6 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                 </button>
               </div>
             )}
-
-            {/* Capture filmstrip */}
-            <div>
-              <div className="flex items-baseline justify-between mb-2 px-1">
-                <h2 className="font-roboto font-bold text-white">Every capture</h2>
-                <span className="font-roboto text-white/50 text-xs">Scroll · tap for detail</span>
-              </div>
-              {/* Why a filmstrip with no pictures. Media storage arrived after
-                  the first releases, so early records are text-only and always
-                  will be — the media was never kept. Saying so beats leaving a
-                  row of grey placeholders to be interpreted as a bug. */}
-              {analyses.length > 0 && !analyses.some((a) => a.has_poster) && (
-                <p className="font-roboto text-white/45 text-xs mb-2 px-1">
-                  These observations were recorded before Etho started keeping
-                  the pictures, so there's nothing to show for them. New uploads
-                  will appear here with their thumbnails.
-                </p>
-              )}
-
-              <div className="flex gap-3 overflow-x-auto pb-3 scroll-container">
-                {items.map((item, idx) => {
-                  if (item.type === 'weight') {
-                    return (
-                      <div
-                        key={`w${idx}`}
-                        className="flex-none w-24 rounded-2xl border border-dashed border-white/40 bg-white/5 flex flex-col items-center justify-center p-3 gap-1"
-                      >
-                        <Scale className="w-4 h-4 text-white/60" />
-                        <span className="font-roboto font-black text-white">{item.weight_kg}<span className="text-xs font-bold"> kg</span></span>
-                        <span className="font-roboto text-white/50 text-[11px]">{fmtDate(item.date)}</span>
-                      </div>
-                    );
-                  }
-                  const z = ZONE[item.zone] || ZONE.yellow;
-                  return (
-                    <button
-                      key={item.analysis_id || idx}
-                      onClick={() => onOpenAnalysis?.(item.analysis_id, item.date)}
-                      className="flex-none w-52 glass-card rounded-2xl overflow-hidden text-left transition-all hover:bg-white/25 focus:outline-none focus:ring-2 focus:ring-white"
-                    >
-                      <Poster
-                        analysisId={item.analysis_id}
-                        available={item.has_poster}
-                        mediaType={item.media_type}
-                        zoneColor={z.color}
-                      />
-                      <div className="p-3 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-roboto text-white/70 text-xs font-bold">
-                            {fmtDate(item.date)}
-                          </span>
-                          <ZoneBadge score={item.distress_score} zone={item.zone} />
-                        </div>
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-roboto font-black text-white text-xl">
-                            {item.distress_score}
-                            <span className="text-xs font-bold text-white/50">/100</span>
-                          </span>
-                          <span className="flex items-center gap-1 text-white/60">
-                            {item.media_type === 'image'
-                              ? <ImageIcon className="w-3.5 h-3.5" />
-                              : <Video className="w-3.5 h-3.5" />}
-                            {item.srr_bpm && (
-                              <span className="flex items-center gap-0.5 text-[11px]">
-                                <Wind className="w-3 h-3" />{item.srr_bpm}
-                              </span>
-                            )}
-                          </span>
-                        </div>
-                        <Sparkline curve={item.distress_curve} />
-                        <div className="flex flex-wrap gap-1">
-                          {item.context && (
-                            <span className="px-1.5 py-0.5 rounded bg-white/15 border border-white/20 text-white/80 text-[10px] font-bold capitalize">
-                              {item.context.replace(/_/g, ' ')}
-                            </span>
-                          )}
-                          {item.quality_grade && item.quality_grade !== 'good' && (
-                            <span className="px-1.5 py-0.5 rounded bg-white/15 border border-white/20 text-white/70 text-[10px] font-bold">
-                              {item.quality_grade} quality
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
 
             {/* Actions */}
             <div className="grid sm:grid-cols-2 gap-3">
