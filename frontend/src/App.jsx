@@ -1,17 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Menu, X, Home, Info, BarChart3, Activity, Lock, PawPrint,
-         CalendarRange, Upload } from 'lucide-react';
+import { Menu, X, Home, Info, Activity, Lock, PawPrint, Upload } from 'lucide-react';
+import { listPets } from './api';
 import Hero from './pages/Hero';
 import Landing from './pages/Landing';
 import Dashboard from './pages/Dashboard';
 import About from './pages/About';
 import Biometrics from './pages/Biometrics';
 import Pets from './pages/Pets';
-import Timeline from './pages/Timeline';
 import VetReport from './pages/VetReport';
-import AnalysisDetail from './pages/AnalysisDetail';
-import PetProfile from './pages/PetProfile';
+import PetPage from './pages/PetPage';
 
 const PASSWORD = 'etho2024';
 const ACTIVE_PET_KEY = 'etho.activePetId';
@@ -25,8 +23,6 @@ function App() {
   const [analysisData, setAnalysisData] = useState(null);
   const [videoUrl, setVideoUrl] = useState(null);
   const [mediaType, setMediaType] = useState(null);
-  // A past observation reopened from the timeline.
-  const [detailAnalysisId, setDetailAnalysisId] = useState(null);
 
   // The pet new captures are filed against. Remembered between visits so a
   // guardian isn't re-picking their pet on every upload.
@@ -34,7 +30,10 @@ function App() {
     () => localStorage.getItem(ACTIVE_PET_KEY) || null
   );
   const [reportPetId, setReportPetId] = useState(null);
-  const [profilePetId, setProfilePetId] = useState(null);
+  // Which tab the pet page should open on, and which observation (if any).
+  const [petTab, setPetTab] = useState('timeline');
+  const [openAnalysisId, setOpenAnalysisId] = useState(null);
+  const [booting, setBooting] = useState(false);
 
   useEffect(() => {
     if (activePetId) localStorage.setItem(ACTIVE_PET_KEY, activePetId);
@@ -43,26 +42,44 @@ function App() {
 
   const handlePasswordSubmit = (e) => {
     e.preventDefault();
-    if (passwordInput === PASSWORD) {
-      setIsAuthenticated(true);
-      setPasswordError(false);
-    } else {
+    if (passwordInput !== PASSWORD) {
       setPasswordError(true);
       setPasswordInput('');
+      return;
     }
+    setIsAuthenticated(true);
+    setPasswordError(false);
+    // Straight to the pet, not to a splash screen. Someone who has already
+    // added a pet is opening the app to check on them; a returning user should
+    // land on their record. Only a first-timer needs the welcome question.
+    setBooting(true);
+    listPets()
+      .then((pets) => {
+        if (!pets.length) { setCurrentPage('landing'); return; }
+        const remembered = pets.find((p) => p.id === activePetId);
+        const target = remembered || pets[0];
+        setActivePetId(target.id);
+        setPetTab('timeline');
+        setCurrentPage('pet');
+      })
+      .catch(() => setCurrentPage('landing'))
+      .finally(() => setBooting(false));
   };
 
   const handleAnalysisComplete = (data, url, kind) => {
     setAnalysisData(data);
     setVideoUrl(url);
     setMediaType(kind || null);
-    setCurrentPage('dashboard');
-  };
-
-  const openAnalysis = (analysisId) => {
-    if (!analysisId) return;
-    setDetailAnalysisId(analysisId);
-    navigateTo('analysis');
+    // A fresh result belongs in the pet's record, opened as the observation
+    // tab so the timeline it just joined is one tap away. An unassigned
+    // one-off has no record to sit in, so it gets the standalone screen.
+    if (data?.analysis_id && data?.pet_id) {
+      setActivePetId(data.pet_id);
+      setOpenAnalysisId(data.analysis_id);
+      navigateTo('pet');
+    } else {
+      navigateTo('dashboard');
+    }
   };
 
   const navigateTo = (page) => {
@@ -70,14 +87,11 @@ function App() {
     setMenuOpen(false);
   };
 
-  const openTimeline = (petId) => {
+  const openPet = (petId, tab = 'timeline') => {
     if (petId) setActivePetId(petId);
-    navigateTo('timeline');
-  };
-
-  const openProfile = (petId) => {
-    setProfilePetId(petId);
-    navigateTo('petprofile');
+    setOpenAnalysisId(null);
+    setPetTab(tab);
+    navigateTo('pet');
   };
 
   const openVetReport = (petId) => {
@@ -139,18 +153,29 @@ function App() {
     );
   }
 
+  // Between the password and knowing which pet to open, the page would
+  // otherwise render the hero for a beat and then jump. A quiet hold is
+  // better than a flash of a screen nobody asked for.
+  if (booting) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <img src="/etho-logo.png" alt="Etho" className="h-10 opacity-70 animate-pulse"
+             onError={(e) => { e.target.style.display = 'none'; }} />
+      </div>
+    );
+  }
+
   const showMenu = currentPage !== 'hero';
 
-  // Timeline and the vet report only appear once there's a pet to show —
-  // empty menu items teach nothing and make the app feel unfinished.
+  // Timeline and the latest analysis are no longer destinations — they are
+  // tabs inside the pet, so the nav lists the pet itself instead.
   const navItems = [
-    { id: 'hero', label: 'Home', icon: Home },
-    { id: 'landing', label: 'Analyse a clip', icon: Upload },
+    ...(activePetId ? [{ id: 'pet', label: 'Your pet', icon: PawPrint }] : []),
+    { id: 'landing', label: 'Add an observation', icon: Upload },
     { id: 'pets', label: 'My pets', icon: PawPrint },
-    ...(activePetId ? [{ id: 'timeline', label: 'Timeline', icon: CalendarRange }] : []),
-    { id: 'dashboard', label: 'Latest analysis', icon: BarChart3, disabled: !analysisData },
     { id: 'about', label: 'Research', icon: Info },
     { id: 'biometrics', label: 'Biometrics', icon: Activity, badge: 'New' },
+    { id: 'hero', label: 'About Etho', icon: Home },
   ];
 
   const page = (key, node) => (
@@ -226,7 +251,7 @@ function App() {
 
       <AnimatePresence mode="wait">
         {currentPage === 'hero' && page('hero',
-          <Hero onGetStarted={() => setCurrentPage('landing')} />
+          <Hero onGetStarted={() => (activePetId ? openPet(activePetId) : navigateTo('landing'))} />
         )}
 
         {currentPage === 'landing' && page('landing',
@@ -234,7 +259,8 @@ function App() {
             onAnalysisComplete={handleAnalysisComplete}
             petId={activePetId}
             onChangePet={setActivePetId}
-            onViewTimeline={openTimeline}
+            onViewTimeline={(id) => openPet(id, 'timeline')}
+            onManagePets={() => navigateTo('pets')}
           />
         )}
 
@@ -242,37 +268,25 @@ function App() {
           <Pets
             activePetId={activePetId}
             onSelectPet={setActivePetId}
-            onViewTimeline={openTimeline}
-            onOpenProfile={openProfile}
+            onViewTimeline={(id) => openPet(id, 'timeline')}
+            onOpenProfile={(id) => openPet(id, 'profile')}
           />
         )}
 
-        {currentPage === 'timeline' && page('timeline',
-          <Timeline
+        {currentPage === 'pet' && page('pet',
+          <PetPage
             petId={activePetId}
+            initialTab={petTab}
+            openAnalysisId={openAnalysisId}
+            onChangePet={(id) => openPet(id, 'timeline')}
+            onAddObservation={() => navigateTo('landing')}
             onOpenVetReport={openVetReport}
-            onUpload={() => navigateTo('landing')}
-            onOpenAnalysis={openAnalysis}
-          />
-        )}
-
-        {currentPage === 'petprofile' && page('petprofile',
-          <PetProfile
-            petId={profilePetId}
-            onBack={() => navigateTo('pets')}
-            onViewTimeline={openTimeline}
-          />
-        )}
-
-        {currentPage === 'analysis' && page('analysis',
-          <AnalysisDetail
-            analysisId={detailAnalysisId}
-            onBack={() => navigateTo('timeline')}
+            onManagePets={() => navigateTo('pets')}
           />
         )}
 
         {currentPage === 'vetreport' && page('vetreport',
-          <VetReport petId={reportPetId} onBack={() => navigateTo('timeline')} />
+          <VetReport petId={reportPetId} onBack={() => openPet(reportPetId, 'timeline')} />
         )}
 
         {currentPage === 'dashboard' && page('dashboard',
@@ -280,7 +294,7 @@ function App() {
             analysisData={analysisData}
             videoUrl={videoUrl}
             mediaType={mediaType}
-            onViewTimeline={activePetId ? () => openTimeline(activePetId) : null}
+            onViewTimeline={activePetId ? () => openPet(activePetId, 'timeline') : null}
           />
         )}
 

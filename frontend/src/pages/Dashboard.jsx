@@ -374,7 +374,8 @@ const MarkerInfoModal = ({ marker, onClose }) => {
   );
 };
 
-function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, headerNote }) {
+function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, headerNote,
+                    embedded = false }) {
   const [expandedSections, setExpandedSections] = useState({ audio: true, interpret: true, didyouknow: true, research: false });
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -684,15 +685,25 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
       <AnimatePresence>
         {selectedMarker && <MarkerInfoModal marker={selectedMarker} onClose={() => setSelectedMarker(null)} />}
       </AnimatePresence>
-      <header className="py-6 px-6"><div className="max-w-5xl mx-auto flex flex-col items-center">
-        <img src="/etho-logo.png" alt="Etho" className="h-10" onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }} />
-        <span className="font-roboto font-bold text-3xl text-white hidden">Etho</span>
-        <p className="font-roboto text-white/60 text-sm mt-2">
-          {headerNote || 'AI-powered pet behavior analysis'}
-        </p>
-      </div></header>
+      {/* Inside a pet tab the logo lockup is already on screen twice over, so
+          embedded mode keeps only the date line. */}
+      {embedded ? (
+        headerNote && (
+          <div className="max-w-5xl mx-auto px-6 pt-5">
+            <p className="font-roboto text-white/55 text-sm">{headerNote}</p>
+          </div>
+        )
+      ) : (
+        <header className="py-6 px-6"><div className="max-w-5xl mx-auto flex flex-col items-center">
+          <img src="/etho-logo.png" alt="Etho" className="h-10" onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }} />
+          <span className="font-roboto font-bold text-3xl text-white hidden">Etho</span>
+          <p className="font-roboto text-white/60 text-sm mt-2">
+            {headerNote || 'AI-powered pet behavior analysis'}
+          </p>
+        </div></header>
+      )}
 
-      {onBack && (
+      {!embedded && onBack && (
         <div className="max-w-5xl mx-auto px-6 -mt-2 mb-2">
           <button
             onClick={onBack}

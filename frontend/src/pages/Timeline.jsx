@@ -132,7 +132,8 @@ function Poster({ analysisId, available, mediaType, zoneColor }) {
   );
 }
 
-export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnalysis }) {
+export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnalysis,
+                                   embedded = false }) {
   const [pet, setPet] = useState(null);
   const [items, setItems] = useState([]);
   const [trends, setTrends] = useState(null);
@@ -220,17 +221,20 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
   const flags = trends?.red_flags || [];
 
   return (
-    <div className="min-h-screen px-4 py-8 md:px-6">
+    <div className={`px-4 md:px-6 ${embedded ? "pt-5 pb-10" : "min-h-screen py-8"}`}>
       <div className="max-w-4xl mx-auto space-y-4">
 
-        {/* Header */}
-        <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
-          <h1 className="font-roboto font-black text-3xl text-white">{pet?.name}</h1>
-          <p className="font-roboto text-white/70 capitalize">
-            {[pet?.species, pet?.breed].filter(Boolean).join(' · ')}
-            {analyses.length > 0 && ` · ${analyses.length} observation${analyses.length === 1 ? '' : 's'}`}
-          </p>
-        </motion.div>
+        {/* No pet header here when embedded — the PetPage shell owns it, and
+            two names stacked on one screen reads as a bug. */}
+        {!embedded && (
+          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}>
+            <h1 className="font-roboto font-black text-3xl text-white">{pet?.name}</h1>
+            <p className="font-roboto text-white/70 capitalize">
+              {[pet?.species, pet?.breed].filter(Boolean).join(' · ')}
+              {analyses.length > 0 && ` · ${analyses.length} observation${analyses.length === 1 ? '' : 's'}`}
+            </p>
+          </motion.div>
+        )}
 
         {analyses.length === 0 ? (
           <div className="glass-card rounded-2xl p-8 text-center">
@@ -493,7 +497,7 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                   return (
                     <button
                       key={item.analysis_id || idx}
-                      onClick={() => onOpenAnalysis?.(item.analysis_id)}
+                      onClick={() => onOpenAnalysis?.(item.analysis_id, item.date)}
                       className="flex-none w-52 glass-card rounded-2xl overflow-hidden text-left transition-all hover:bg-white/25 focus:outline-none focus:ring-2 focus:ring-white"
                     >
                       <Poster

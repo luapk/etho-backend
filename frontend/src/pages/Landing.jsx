@@ -46,7 +46,7 @@ const PHOTO_STEPS = [
 const isImage = (f) => (f.type || '').startsWith('image/');
 const isMedia = (f) => isImage(f) || (f.type || '').startsWith('video/');
 
-function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline }) {
+function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline, onManagePets }) {
   const [pets, setPets] = useState(null);          // null while loading
   const [nameInput, setNameInput] = useState('');
   const [creating, setCreating] = useState(false);
@@ -394,16 +394,15 @@ function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline }) {
                     {p.name}
                   </button>
                 ))}
-                <form onSubmit={nameSubmit} className="flex gap-1.5">
-                  <input value={nameInput} onChange={(e) => setNameInput(e.target.value)}
-                         placeholder="New pet"
-                         className="w-28 px-3 py-2 rounded-lg bg-white/10 border border-white/25 text-white placeholder-white/40 font-roboto text-sm focus:outline-none focus:border-white/60" />
-                  {nameInput.trim() && (
-                    <button type="submit" className="px-3 py-2 rounded-lg bg-white/30 text-white font-roboto text-sm font-bold">
-                      Add
-                    </button>
-                  )}
-                </form>
+                {/* Switching only. Creating a pet happens on My pets, so
+                    there is one place that owns the roster. */}
+                <button
+                  type="button"
+                  onClick={() => { setSwitching(false); onManagePets?.(); }}
+                  className="px-3 py-2 rounded-lg bg-white/5 text-white/60 hover:bg-white/15 font-roboto text-sm border border-dashed border-white/25"
+                >
+                  Manage pets
+                </button>
               </motion.div>
             )}
           </AnimatePresence>

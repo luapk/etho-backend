@@ -40,7 +40,8 @@ const FIELD =
 const LABEL = 'font-roboto text-white/80 text-sm mb-1.5 block';
 const HINT = 'font-roboto text-white/45 text-xs mt-1.5';
 
-export default function PetProfile({ petId, onBack, onViewTimeline, onChanged }) {
+export default function PetProfile({ petId, onBack, onViewTimeline, onChanged,
+                                     embedded = false }) {
   const [pet, setPet] = useState(null);
   const [form, setForm] = useState(null);
   const [avatarUrl, setAvatarUrl] = useState(null);
@@ -164,19 +165,22 @@ export default function PetProfile({ petId, onBack, onViewTimeline, onChanged })
   const breedRecognised = breedCtx?.predispositions?.length > 0;
 
   return (
-    <div className="min-h-screen px-4 py-8 md:px-6">
+    <div className={`px-4 md:px-6 ${embedded ? 'pt-6 pb-12' : 'min-h-screen py-8'}`}>
       <div className="max-w-xl mx-auto">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-xl glass-card hover:bg-white/25 text-white font-roboto font-medium transition-colors mb-4"
-        >
-          <ArrowLeft className="w-4 h-4" /> Your pets
-        </button>
+        {/* Embedded in the pet page, the tab bar is the way back. */}
+        {!embedded && onBack && (
+          <button
+            onClick={onBack}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl glass-card hover:bg-white/25 text-white font-roboto font-medium transition-colors mb-4"
+          >
+            <ArrowLeft className="w-4 h-4" /> Your pets
+          </button>
+        )}
 
         {/* Portrait */}
         <motion.div
           initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
-          className="flex flex-col items-center mb-6"
+          className="flex flex-col items-center mb-6 mt-1"
         >
           <button
             onClick={() => fileRef.current?.click()}
@@ -204,9 +208,12 @@ export default function PetProfile({ petId, onBack, onViewTimeline, onChanged })
             className="hidden"
           />
 
+          {!embedded && (
           <h1 className="font-roboto font-black text-3xl text-white mt-4 text-center">
             {form.name || 'Unnamed'}
           </h1>
+          )}
+          {!embedded && (
           <p className="font-roboto text-white/60 text-sm">
             <span className="capitalize">
               {[form.species, form.breed].filter(Boolean).join(' · ')}
@@ -214,7 +221,8 @@ export default function PetProfile({ petId, onBack, onViewTimeline, onChanged })
             {age ? `${form.species || form.breed ? ' · ' : ''}${age}` : null}
             {!form.species && !form.breed && !age ? 'No details yet' : null}
           </p>
-          {pet?.analysis_count > 0 && (
+          )}
+          {!embedded && pet?.analysis_count > 0 && (
             <button
               onClick={() => onViewTimeline?.(petId)}
               className="flex items-center gap-2 mt-3 px-4 py-2 rounded-xl bg-white/15 hover:bg-white/25 text-white/85 font-roboto text-sm transition-colors"

@@ -13,14 +13,17 @@
 
 html {
   scroll-behavior: smooth;
-  overflow-x: hidden;
+  /* `clip`, not `hidden`. Both stop sideways scrolling, but `hidden` makes the
+     element a scroll container, which silently kills `position: sticky` for
+     every descendant — that is what stopped the pet page's tab bar sticking. */
+  overflow-x: clip;
 }
 
 html, body {
   min-height: 100vh;
   min-height: 100dvh;
   width: 100%;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 body {

@@ -18,7 +18,7 @@ import { getAnalysis, getPet, fetchAnalysisMedia, friendlyError } from '../api';
  * fully and just says the clip has aged out.
  */
 
-export default function AnalysisDetail({ analysisId, onBack }) {
+export default function AnalysisDetail({ analysisId, onBack, embedded = false }) {
   const [record, setRecord] = useState(null);
   const [petName, setPetName] = useState('');
   const [mediaUrl, setMediaUrl] = useState(null);
@@ -101,7 +101,8 @@ export default function AnalysisDetail({ analysisId, onBack }) {
         videoUrl={mediaUrl}
         mediaType={record.media_type}
         onBack={onBack}
-        headerNote={`${petName ? `${petName} · ` : ''}${observed}`}
+        embedded={embedded}
+        headerNote={embedded ? observed : `${petName ? `${petName} · ` : ''}${observed}`}
       />
       {mediaState && (
         <div className="max-w-5xl mx-auto px-6 pb-10 -mt-6">
