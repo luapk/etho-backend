@@ -11,6 +11,7 @@ import Pets from './pages/Pets';
 import Timeline from './pages/Timeline';
 import VetReport from './pages/VetReport';
 import AnalysisDetail from './pages/AnalysisDetail';
+import PetProfile from './pages/PetProfile';
 
 const PASSWORD = 'etho2024';
 const ACTIVE_PET_KEY = 'etho.activePetId';
@@ -33,6 +34,7 @@ function App() {
     () => localStorage.getItem(ACTIVE_PET_KEY) || null
   );
   const [reportPetId, setReportPetId] = useState(null);
+  const [profilePetId, setProfilePetId] = useState(null);
 
   useEffect(() => {
     if (activePetId) localStorage.setItem(ACTIVE_PET_KEY, activePetId);
@@ -71,6 +73,11 @@ function App() {
   const openTimeline = (petId) => {
     if (petId) setActivePetId(petId);
     navigateTo('timeline');
+  };
+
+  const openProfile = (petId) => {
+    setProfilePetId(petId);
+    navigateTo('petprofile');
   };
 
   const openVetReport = (petId) => {
@@ -236,6 +243,7 @@ function App() {
             activePetId={activePetId}
             onSelectPet={setActivePetId}
             onViewTimeline={openTimeline}
+            onOpenProfile={openProfile}
           />
         )}
 
@@ -245,6 +253,14 @@ function App() {
             onOpenVetReport={openVetReport}
             onUpload={() => navigateTo('landing')}
             onOpenAnalysis={openAnalysis}
+          />
+        )}
+
+        {currentPage === 'petprofile' && page('petprofile',
+          <PetProfile
+            petId={profilePetId}
+            onBack={() => navigateTo('pets')}
+            onViewTimeline={openTimeline}
           />
         )}
 

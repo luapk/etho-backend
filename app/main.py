@@ -806,12 +806,18 @@ async def create_pet(pet: PetCreate, auth: dict = Depends(get_auth)):
 @app.get("/api/pets")
 async def get_pets(auth: dict = Depends(get_auth)):
     """Owner keys see only their own pets; the admin key sees all."""
-    return {"success": True, "pets": pet_store.list_pets(owner_id=auth["owner_id"])}
+    pets = pet_store.list_pets(owner_id=auth["owner_id"])
+    # Resolved from the filesystem rather than stored, for the same reason
+    # posters are: the file is the truth and a column would drift from it.
+    for p in pets:
+        p["has_avatar"] = media_store.has_avatar(p["id"])
+    return {"success": True, "pets": pets}
 
 
 @app.get("/api/pets/{pet_id}")
 async def get_pet(pet_id: str, auth: dict = Depends(get_auth)):
     pet = _authorized_pet(pet_id, auth)
+    pet["has_avatar"] = media_store.has_avatar(pet_id)
     return {
         "success": True,
         "pet": pet,
@@ -887,6 +893,55 @@ async def get_pet_weights(pet_id: str, auth: dict = Depends(get_auth)):
         "weight_assessment": breed_reference.assess_weight(
             pet.get("species"), pet.get("breed"), pet.get("weight_kg")),
     }
+
+
+@app.post("/api/pets/{pet_id}/avatar")
+async def upload_pet_avatar(pet_id: str, file: UploadFile = File(...),
+                            auth: dict = Depends(get_auth)):
+    """Set a pet's profile picture. Centre-cropped square, stored on the volume
+    alongside their record — never evicted, unlike annotated clips."""
+    _authorized_pet(pet_id, auth)
+    if (file.content_type or "") not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=400,
+                            detail="Profile pictures must be a JPEG, PNG or WebP image.")
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(0)
+    if size > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="That image is too large (max 20MB).")
+
+    tmp_path = None
+    try:
+        ext = os.path.splitext(file.filename or "avatar.jpg")[1] or ".jpg"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp_path = tmp.name
+            shutil.copyfileobj(file.file, tmp)
+        if not media_store.save_avatar(pet_id, tmp_path):
+            raise HTTPException(status_code=400,
+                                detail="That image couldn't be read. Try a different photo.")
+        return {"success": True, "has_avatar": True}
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+@app.get("/api/pets/{pet_id}/avatar")
+async def get_pet_avatar(pet_id: str, auth: dict = Depends(get_auth)):
+    """A pet's profile picture. 404 when they haven't got one."""
+    _authorized_pet(pet_id, auth)
+    path = media_store.avatar_path(pet_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="No profile picture set")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@app.delete("/api/pets/{pet_id}/avatar")
+async def delete_pet_avatar(pet_id: str, auth: dict = Depends(get_auth)):
+    _authorized_pet(pet_id, auth)
+    return {"success": True, "removed": media_store.delete_avatar(pet_id)}
 
 
 @app.get("/api/pets/{pet_id}/capture-plan")

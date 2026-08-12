@@ -74,8 +74,11 @@ Analyses can be logged against pet profiles, turning one-shot results into a rec
 
 ```
 POST  /api/pets                         create profile (name, species, breed, sex, birthdate, weight)
-GET   /api/pets                         list with analysis counts
-PATCH /api/pets/{id}                    update profile
+GET   /api/pets                         list with analysis counts + has_avatar
+PATCH /api/pets/{id}                    update profile (the Pet Profile screen)
+POST  /api/pets/{id}/avatar             set a profile picture (centre-cropped square)
+GET   /api/pets/{id}/avatar             fetch it (owner-scoped)
+DELETE /api/pets/{id}/avatar            remove it
 POST  /api/video/upload?pet_id=...      analysis is logged to that pet (pet_id optional everywhere)
 GET   /api/pets/{id}/history            chronological indexed metrics (for timeline/chart UI)
 GET   /api/pets/{id}/trends             baseline ± SD, latest deviation, slope (pts/week), red flags
@@ -240,8 +243,9 @@ Declaring the X11 libs in `aptPkgs` is kept only as a safety net; it is not suff
 **Record copy (`$DATA_DIR/media/`, `media_store.py`).** A timeline of scores with no pictures is a spreadsheet, so every analysis logged **against a pet** also keeps:
 
 - `{analysis_id}_poster.jpg` — 480px still cut 40% into the ANNOTATED media (so the detection box is visible on the tile, proving the tool found the pet), tens of KB.
+- `{pet_id}_avatar.jpg` — the guardian's chosen profile picture, centre-cropped square at 512px (squashing a portrait phone photo into a round tile distorts the face, which is the one thing the picture is for).
 - `{analysis_id}.mp4|.jpg` — the annotated media itself, replayed by the detail view.
 
-Retention is asymmetric on purpose: **clips are evicted oldest-first past `MEDIA_MAX_MB` (default 2000); posters are never evicted.** A timeline that loses its pictures loses what makes it readable, whereas a clip that ages out costs nothing the record needs — the analysis JSON is the durable artefact. `GET /api/analyses/{id}/media` returning 404 is therefore a normal end state the UI handles, not an error. Unassigned one-off analyses store no media at all: with no timeline to appear in, nothing would ever read it.
+Retention is asymmetric on purpose: **clips are evicted oldest-first past `MEDIA_MAX_MB` (default 2000); posters and avatars are never evicted** — `_is_permanent()` is a single predicate precisely because three separate code paths (size accounting, eviction, status) have to agree on what survives, and an avatar sitting in the same directory as the clips would otherwise be deleted as one. A timeline that loses its pictures loses what makes it readable, whereas a clip that ages out costs nothing the record needs — the analysis JSON is the durable artefact. `GET /api/analyses/{id}/media` returning 404 is therefore a normal end state the UI handles, not an error. Unassigned one-off analyses store no media at all: with no timeline to appear in, nothing would ever read it.
 
 Both media endpoints are owner-scoped (404, never 403). Because `<img src>` and `<video src>` can't send `X-API-Key`, the frontend fetches them as blobs and uses object URLs rather than putting the key in a URL where it would land in server logs.

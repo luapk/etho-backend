@@ -48,6 +48,20 @@ export const createPet = (pet) =>
 export const updatePet = (id, patch) =>
   client.patch(`/api/pets/${id}`, patch).then((r) => r.data.pet);
 
+/** Set a pet's profile picture. Any JPEG/PNG/WebP; cropped square server-side. */
+export function uploadPetAvatar(id, file) {
+  const form = new FormData();
+  form.append('file', file);
+  return client
+    .post(`/api/pets/${id}/avatar`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then((r) => r.data);
+}
+
+export const deletePetAvatar = (id) =>
+  client.delete(`/api/pets/${id}/avatar`).then((r) => r.data);
+
 // ── Longitudinal record ──────────────────────────────────────────────────────
 
 export const getTimeline = (id) =>
@@ -153,6 +167,10 @@ export const annotatedMediaUrl = (mediaId) =>
 
 const asObjectUrl = (path) =>
   client.get(path, { responseType: 'blob' }).then((r) => URL.createObjectURL(r.data));
+
+/** A pet's profile picture. Resolves null when they haven't got one. */
+export const fetchPetAvatar = (petId) =>
+  asObjectUrl(`/api/pets/${petId}/avatar`).catch(() => null);
 
 /** Timeline thumbnail. Resolves null when none was stored. */
 export const fetchPoster = (analysisId) =>

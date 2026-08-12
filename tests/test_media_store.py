@@ -88,6 +88,43 @@ check("no-op when already under budget", media_store.enforce_budget(budget_mb=10
 check("zero budget disables eviction rather than wiping the library",
       media_store.enforce_budget(budget_mb=0) == 0 and media_store.has_media(ids[4]))
 
+# ── Avatars: permanent, square, and never confused with a clip ──
+import numpy as np, cv2                                  # noqa: E402
+
+pid = str(uuid.uuid4())
+portrait = os.path.join(tempfile.mkdtemp(), "portrait.jpg")
+cv2.imwrite(portrait, np.full((1200, 800, 3), 120, np.uint8))   # tall phone photo
+check("avatar saved", media_store.save_avatar(pid, portrait) is True)
+check("avatar found", media_store.has_avatar(pid) is True)
+av = cv2.imread(media_store.avatar_path(pid))
+check("avatar is square", av.shape[0] == av.shape[1], av.shape)
+check("avatar is downscaled", av.shape[0] == media_store.AVATAR_EDGE, av.shape)
+
+small = os.path.join(tempfile.mkdtemp(), "small.png")
+cv2.imwrite(small, np.full((200, 300, 3), 80, np.uint8))
+pid2 = str(uuid.uuid4())
+media_store.save_avatar(pid2, small)
+av2 = cv2.imread(media_store.avatar_path(pid2))
+check("small avatar squared but not upscaled", av2.shape[:2] == (200, 200), av2.shape)
+
+check("unreadable file rejected cleanly",
+      media_store.save_avatar(str(uuid.uuid4()), portrait + ".missing") is False)
+check("traversal id rejected", media_store.save_avatar("../../evil", portrait) is False)
+
+# The bug this guards: avatars live in the same directory as clips, so an
+# eviction pass that only skips posters would delete pets' faces.
+before = media_store.library_bytes()
+fake_media(os.path.join(root, f"{uuid.uuid4()}.mp4"), 4.0)
+media_store.enforce_budget(budget_mb=1)
+check("avatars are not counted as evictable media",
+      media_store.has_avatar(pid) and media_store.has_avatar(pid2),
+      "an avatar must survive eviction like a poster")
+check("library_bytes ignores avatars",
+      media_store.library_bytes() < before + 4 * 1024 * 1024)
+
+check("avatar removed on request", media_store.delete_avatar(pid) is True)
+check("removing a missing avatar is a no-op", media_store.delete_avatar(pid) is False)
+
 # ── Deletion removes both artefacts ──
 media_store.delete_for_analysis(ids[4])
 check("delete removes clip", media_store.has_media(ids[4]) is False)
@@ -96,6 +133,7 @@ check("delete removes poster", media_store.has_poster(ids[4]) is False)
 # ── Status reporting ──
 st = media_store.storage_status()
 check("status counts posters", st["posters_stored"] == 4, st)
+check("status counts avatars", st["avatars_stored"] == 1, st)
 check("status reports budget", st["budget_mb"] == media_store.BUDGET_MB)
 
 # ── Owner scoping through the API ──
@@ -135,6 +173,43 @@ r = client.get(f"/api/analyses/{analysis_id}", headers=H1)
 rec = r.json()["analysis"]
 check("record advertises its poster", rec["has_poster"] is True)
 check("record advertises missing clip", rec["has_media"] is False)
+
+# ── Avatars through the API ──
+avatar_src = os.path.join(tempfile.mkdtemp(), "face.jpg")
+cv2.imwrite(avatar_src, np.full((900, 600, 3), 200, np.uint8))
+
+with open(avatar_src, "rb") as fh:
+    r = client.post(f"/api/pets/{pet['id']}/avatar",
+                    files={"file": ("face.jpg", fh, "image/jpeg")}, headers=H1)
+check("owner can set an avatar", r.status_code == 200, r.text[:120])
+
+r = client.get(f"/api/pets/{pet['id']}/avatar", headers=H1)
+check("avatar served", r.status_code == 200 and r.headers["content-type"] == "image/jpeg")
+
+r = client.get(f"/api/pets/{pet['id']}/avatar", headers=H2)
+check("other owner can't see the avatar (404, not 403)", r.status_code == 404)
+
+with open(avatar_src, "rb") as fh:
+    r = client.post(f"/api/pets/{pet['id']}/avatar",
+                    files={"file": ("face.jpg", fh, "image/jpeg")}, headers=H2)
+check("other owner can't set an avatar", r.status_code == 404, r.status_code)
+
+listed = client.get("/api/pets", headers=H1).json()["pets"][0]
+check("pet list advertises the avatar", listed["has_avatar"] is True, listed)
+one = client.get(f"/api/pets/{pet['id']}", headers=H1).json()["pet"]
+check("pet detail advertises the avatar", one["has_avatar"] is True)
+
+with open(avatar_src, "rb") as fh:
+    r = client.post(f"/api/pets/{pet['id']}/avatar",
+                    files={"file": ("clip.mp4", fh, "video/mp4")}, headers=H1)
+check("a video is rejected as a profile picture", r.status_code == 400, r.status_code)
+
+r = client.delete(f"/api/pets/{pet['id']}/avatar", headers=H1)
+check("avatar deletable", r.status_code == 200 and r.json()["removed"] is True)
+check("pet list reflects removal",
+      client.get("/api/pets", headers=H1).json()["pets"][0]["has_avatar"] is False)
+r = client.get(f"/api/pets/{pet['id']}/avatar", headers=H1)
+check("missing avatar 404s", r.status_code == 404)
 
 tl = client.get(f"/api/pets/{pet['id']}/timeline", headers=H1).json()["timeline"]
 entry = [i for i in tl if i["type"] == "analysis"][0]

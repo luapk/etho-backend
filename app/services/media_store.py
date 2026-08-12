@@ -56,6 +56,16 @@ _VIDEO_EXT = ".mp4"
 _IMAGE_EXT = ".jpg"
 
 
+# Small, permanent artefacts. Evicting these would cost the product something
+# the record can't replace, and they're tens of KB each. Kept as one predicate
+# because three separate places have to agree on what survives.
+_KEEP_SUFFIXES = ("_poster.jpg", "_avatar.jpg")
+
+
+def _is_permanent(filename: str) -> bool:
+    return filename.endswith(_KEEP_SUFFIXES)
+
+
 def media_root() -> str:
     """The media directory, created on demand. Lives beside the database so a
     single mounted volume covers both."""
@@ -136,6 +146,66 @@ def _write_poster(source_path: str, dest_path: str, is_video: bool) -> bool:
         return False
 
 
+# ── Pet avatars ──────────────────────────────────────────────────────────────
+# A profile picture the guardian chooses, as opposed to a poster the pipeline
+# cuts. Square-cropped so a list of pets reads as a list of faces rather than a
+# jumble of aspect ratios.
+AVATAR_EDGE = 512
+
+
+def avatar_path(pet_id: str) -> Optional[str]:
+    if not _safe(pet_id):
+        return None
+    p = os.path.join(media_root(), f"{pet_id}_avatar.jpg")
+    return p if os.path.exists(p) else None
+
+
+def has_avatar(pet_id: str) -> bool:
+    return avatar_path(pet_id) is not None
+
+
+def save_avatar(pet_id: str, source_path: str) -> bool:
+    """Store a square, downscaled profile picture for a pet.
+
+    Centre-cropped to a square before scaling: a phone photo is portrait or
+    landscape, and squashing it to fit a round tile distorts the animal's face,
+    which is the one thing the picture is for.
+    """
+    if not _safe(pet_id) or not source_path or not os.path.exists(source_path):
+        return False
+    try:
+        import cv2
+    except Exception:
+        return False
+    try:
+        img = cv2.imread(source_path)
+        if img is None:
+            return False
+        h, w = img.shape[:2]
+        side = min(h, w)
+        top, left = (h - side) // 2, (w - side) // 2
+        img = img[top:top + side, left:left + side]
+        if side > AVATAR_EDGE:
+            img = cv2.resize(img, (AVATAR_EDGE, AVATAR_EDGE),
+                             interpolation=cv2.INTER_AREA)
+        return bool(cv2.imwrite(os.path.join(media_root(), f"{pet_id}_avatar.jpg"),
+                                img, [int(cv2.IMWRITE_JPEG_QUALITY), 85]))
+    except Exception as e:
+        print(f"  ⚠ Could not store avatar for {pet_id}: {e}")
+        return False
+
+
+def delete_avatar(pet_id: str) -> bool:
+    path = avatar_path(pet_id)
+    if not path:
+        return False
+    try:
+        os.unlink(path)
+        return True
+    except OSError:
+        return False
+
+
 def save_for_analysis(analysis_id: str, media_type: str,
                       annotated_path: str = None,
                       original_path: str = None) -> dict:
@@ -181,7 +251,7 @@ def library_bytes() -> int:
     total = 0
     try:
         for name in os.listdir(media_root()):
-            if name.endswith("_poster.jpg"):
+            if _is_permanent(name):
                 continue
             try:
                 total += os.path.getsize(os.path.join(media_root(), name))
@@ -206,7 +276,7 @@ def enforce_budget(budget_mb: int = None) -> int:
         root = media_root()
         files = []
         for name in os.listdir(root):
-            if name.endswith("_poster.jpg"):
+            if _is_permanent(name):
                 continue
             path = os.path.join(root, name)
             try:
@@ -251,11 +321,14 @@ def storage_status() -> dict:
     """Plain-English summary for /health."""
     used = library_bytes()
     posters = 0
+    avatars = 0
     clips = 0
     try:
         for name in os.listdir(media_root()):
             if name.endswith("_poster.jpg"):
                 posters += 1
+            elif name.endswith("_avatar.jpg"):
+                avatars += 1
             else:
                 clips += 1
     except Exception:
@@ -264,8 +337,9 @@ def storage_status() -> dict:
         "dir": media_root(),
         "clips_stored": clips,
         "posters_stored": posters,
+        "avatars_stored": avatars,
         "used_mb": round(used / (1024 * 1024), 1),
         "budget_mb": BUDGET_MB,
         "note": ("Annotated clips are evicted oldest-first past the budget; "
-                 "timeline posters are always kept."),
+                 "timeline posters and pet avatars are always kept."),
     }

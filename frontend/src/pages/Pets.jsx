@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Plus, ChevronDown, ChevronUp, Check, PawPrint, AlertTriangle,
-         Calendar, Scale, TrendingUp, TrendingDown, Minus } from 'lucide-react';
-import { listPets, createPet, friendlyError } from '../api';
+         Calendar, Scale, ChevronRight } from 'lucide-react';
+import { listPets, createPet, fetchPetAvatar, friendlyError } from '../api';
+import { ageString } from './PetProfile';
 
 /*
  * Pet profiles.
@@ -19,6 +20,32 @@ const SPECIES = [
   { id: 'cat', label: 'Cat' },
 ];
 
+/** A pet's portrait, or a paw. Blob-fetched because avatars are owner-scoped
+ *  and an <img src> can't carry the API key. */
+function Avatar({ pet }) {
+  const [url, setUrl] = useState(null);
+
+  useEffect(() => {
+    if (!pet.has_avatar) { setUrl(null); return undefined; }
+    let objectUrl = null;
+    let cancelled = false;
+    fetchPetAvatar(pet.id).then((u) => {
+      if (cancelled) { if (u) URL.revokeObjectURL(u); return; }
+      objectUrl = u;
+      setUrl(u);
+    });
+    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [pet.id, pet.has_avatar]);
+
+  return (
+    <div className="w-14 h-14 rounded-full overflow-hidden bg-white/20 flex items-center justify-center flex-none">
+      {url
+        ? <img src={url} alt="" className="w-full h-full object-cover" />
+        : <PawPrint className="w-6 h-6 text-white" />}
+    </div>
+  );
+}
+
 function TrendPill({ pet }) {
   const n = pet.analysis_count || 0;
   if (!n) {
@@ -32,7 +59,7 @@ function TrendPill({ pet }) {
   );
 }
 
-export default function Pets({ activePetId, onSelectPet, onViewTimeline }) {
+export default function Pets({ activePetId, onSelectPet, onViewTimeline, onOpenProfile }) {
   const [pets, setPets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -72,6 +99,7 @@ export default function Pets({ activePetId, onSelectPet, onViewTimeline }) {
       setAdding(false);
       setShowMore(false);
       onSelectPet?.(pet.id);
+      if (!showMore) onOpenProfile?.(pet.id);
     } catch (err) {
       setError(friendlyError(err));
     } finally {
@@ -119,10 +147,11 @@ export default function Pets({ activePetId, onSelectPet, onViewTimeline }) {
                   }`}
                 >
                   <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center flex-none">
-                      <PawPrint className="w-6 h-6 text-white" />
-                    </div>
-                    <div className="flex-1 min-w-0">
+                    <Avatar pet={pet} />
+                    <button
+                      onClick={() => onOpenProfile?.(pet.id)}
+                      className="flex-1 min-w-0 text-left"
+                    >
                       <div className="flex items-center gap-2 flex-wrap">
                         <h3 className="font-roboto font-bold text-white text-lg">{pet.name}</h3>
                         {active && (
@@ -131,29 +160,49 @@ export default function Pets({ activePetId, onSelectPet, onViewTimeline }) {
                           </span>
                         )}
                       </div>
-                      <p className="font-roboto text-white/60 text-sm capitalize">
-                        {[pet.species, pet.breed].filter(Boolean).join(' · ') || '—'}
+                      {/* capitalize is scoped to the species/breed span: applied
+                          to the whole line it title-cases "old" and "kg". */}
+                      <p className="font-roboto text-white/60 text-sm">
+                        <span className="capitalize">
+                          {[pet.species, pet.breed].filter(Boolean).join(' · ')}
+                        </span>
+                        {(() => {
+                          const rest = [ageString(pet.birthdate),
+                                        pet.weight_kg ? `${pet.weight_kg} kg` : null]
+                            .filter(Boolean).join(' · ');
+                          const head = [pet.species, pet.breed].filter(Boolean).length;
+                          if (!rest) return head ? null : 'Tap to add their details';
+                          return `${head ? ' · ' : ''}${rest}`;
+                        })()}
                       </p>
                       <TrendPill pet={pet} />
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      {!active && (
-                        <button
-                          onClick={() => onSelectPet?.(pet.id)}
-                          className="px-3 py-2 rounded-xl bg-white/20 hover:bg-white/30 text-white text-sm font-roboto font-medium transition-colors"
-                        >
-                          Select
-                        </button>
-                      )}
-                      {pet.analysis_count > 0 && (
-                        <button
-                          onClick={() => onViewTimeline?.(pet.id)}
-                          className="px-3 py-2 rounded-xl bg-white/20 hover:bg-white/30 text-white text-sm font-roboto font-medium transition-colors whitespace-nowrap"
-                        >
-                          Timeline
-                        </button>
-                      )}
-                    </div>
+                    </button>
+                    <ChevronRight className="w-5 h-5 text-white/40 flex-none" />
+                  </div>
+
+                  <div className="flex gap-2 mt-3 pt-3 border-t border-white/10">
+                    {!active && (
+                      <button
+                        onClick={() => onSelectPet?.(pet.id)}
+                        className="px-3 py-2 rounded-xl bg-white/15 hover:bg-white/25 text-white/85 text-sm font-roboto font-medium transition-colors"
+                      >
+                        Select
+                      </button>
+                    )}
+                    <button
+                      onClick={() => onOpenProfile?.(pet.id)}
+                      className="px-3 py-2 rounded-xl bg-white/15 hover:bg-white/25 text-white/85 text-sm font-roboto font-medium transition-colors"
+                    >
+                      Edit profile
+                    </button>
+                    {pet.analysis_count > 0 && (
+                      <button
+                        onClick={() => onViewTimeline?.(pet.id)}
+                        className="px-3 py-2 rounded-xl bg-white/15 hover:bg-white/25 text-white/85 text-sm font-roboto font-medium transition-colors ml-auto"
+                      >
+                        Timeline
+                      </button>
+                    )}
                   </div>
                 </motion.div>
               );
