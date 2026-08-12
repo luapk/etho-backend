@@ -252,9 +252,7 @@ function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline, onMan
     return (
       <div className="min-h-screen flex flex-col">
         <header className="py-10 px-6 text-center">
-          <img src="/etho-logo.png" alt="Etho" className="h-12 mx-auto drop-shadow-lg"
-               onError={(e) => { e.target.style.display = 'none'; }} />
-        </header>
+          </header>
 
         <div className="flex-1 flex items-center justify-center px-6 pb-24">
           <motion.form
@@ -306,9 +304,7 @@ function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline, onMan
     return (
       <div className="min-h-screen flex flex-col">
         <header className="py-8 px-6 text-center">
-          <img src="/etho-logo.png" alt="Etho" className="h-10 mx-auto drop-shadow-lg"
-               onError={(e) => { e.target.style.display = 'none'; }} />
-        </header>
+          </header>
         <div className="flex-1 px-6 pb-16">
           <div className="max-w-xl mx-auto glass-card rounded-2xl p-6">
             <div className="flex items-center justify-between mb-3">
@@ -367,9 +363,6 @@ function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline, onMan
     <div className="min-h-screen flex flex-col">
       <header className="py-8 px-6">
         <div className="max-w-xl mx-auto flex flex-col items-center">
-          <img src="/etho-logo.png" alt="Etho" className="h-12 mb-3 drop-shadow-lg"
-               onError={(e) => { e.target.style.display = 'none'; }} />
-
           {/* Whose clip this is — a quiet control, not a form */}
           <button
             onClick={() => setSwitching(!switching)}

@@ -201,6 +201,27 @@ function App() {
 
   return (
     <div className="relative min-h-screen font-roboto">
+      {/* The logo sits on every screen except the hero, which is already one
+          big piece of branding. Left-aligned and small: it identifies the app
+          without competing with the pet's name underneath it. */}
+      {showMenu && (
+        <div className="px-4 pt-4 pb-1 md:px-6">
+          <button
+            onClick={() => navigateTo(activePetId ? 'pet' : 'landing')}
+            className="inline-flex items-center"
+            aria-label="Etho — home"
+          >
+            <img
+              src="/etho-logo.png"
+              alt="Etho"
+              className="h-7 drop-shadow-md opacity-90 hover:opacity-100 transition-opacity"
+              onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'inline'; }}
+            />
+            <span className="font-roboto font-black text-xl text-white hidden">Etho</span>
+          </button>
+        </div>
+      )}
+
       {showMenu && (
         <button
           onClick={() => setMenuOpen(!menuOpen)}

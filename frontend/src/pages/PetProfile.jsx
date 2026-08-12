@@ -35,6 +35,38 @@ export function ageString(birthdate) {
   return `${years}y ${months}m old`;
 }
 
+/* How filled-in a pet's profile is.
+ *
+ * Only fields that CHANGE something are counted — species picks the welfare
+ * instrument, breed unlocks the capture plan and the weight range, birthdate
+ * is signalment on the vet report. Free-text notes are deliberately excluded:
+ * counting them would mean nobody ever reaches 100%, which turns the ring into
+ * permanent nagging rather than a finishable task.
+ */
+export const PROFILE_FIELDS = [
+  { key: 'has_avatar', label: 'a photo' },
+  { key: 'species', label: 'cat or dog' },
+  { key: 'breed', label: 'their breed' },
+  { key: 'sex', label: 'sex' },
+  { key: 'birthdate', label: 'date of birth' },
+  { key: 'weight_kg', label: 'weight' },
+];
+
+export function profileCompleteness(pet) {
+  if (!pet) return { done: 0, total: PROFILE_FIELDS.length, percent: 0, missing: [] };
+  const missing = PROFILE_FIELDS.filter((f) => {
+    const v = pet[f.key];
+    return v === null || v === undefined || v === '' || v === false;
+  });
+  const done = PROFILE_FIELDS.length - missing.length;
+  return {
+    done,
+    total: PROFILE_FIELDS.length,
+    percent: Math.round((done / PROFILE_FIELDS.length) * 100),
+    missing: missing.map((f) => f.label),
+  };
+}
+
 const FIELD =
   'w-full px-4 py-3 rounded-xl bg-white/20 border border-white/30 text-white ' +
   'placeholder-white/40 font-roboto focus:outline-none focus:border-white/60';

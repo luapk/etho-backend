@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { PawPrint, ChevronDown, Upload, X, CalendarRange, Settings2,
          FileText } from 'lucide-react';
 import Timeline from './Timeline';
-import PetProfile from './PetProfile';
+import PetProfile, { profileCompleteness } from './PetProfile';
 import AnalysisDetail from './AnalysisDetail';
 import { listPets, fetchPetAvatar } from '../api';
 
@@ -92,14 +92,22 @@ export default function PetPage({
     setTab('timeline');
   };
 
+  /* The portrait is the way into the profile, so Profile is no longer a
+     permanent tab — it opens like an observation does, and closes the same
+     way. Resting state is just the timeline. */
   const TABS = [
     { id: 'timeline', label: 'Timeline', icon: CalendarRange },
-    { id: 'profile', label: 'Profile', icon: Settings2 },
+    ...(tab === 'profile'
+      ? [{ id: 'profile', label: 'Profile', icon: Settings2, closable: true,
+           onClose: () => setTab('timeline') }]
+      : []),
     ...(detail
       ? [{ id: 'detail', label: detail.date ? fmtShort(detail.date) : 'Observation',
-           icon: FileText, closable: true }]
+           icon: FileText, closable: true, onClose: closeObservation }]
       : []),
   ];
+
+  const completeness = profileCompleteness(pet);
 
   if (!petId) {
     return (
@@ -119,16 +127,39 @@ export default function PetPage({
   return (
     <div className="min-h-screen">
       {/* Shell header — shared by every tab, so no tab repeats the pet's name */}
-      <div className="px-4 pt-8 md:px-6">
+      <div className="px-4 pt-3 md:px-6">
         <div className="max-w-4xl mx-auto">
           {/* pr-16 keeps the Add button clear of the fixed menu button, which
               is pinned to the same corner. */}
           <div className="flex items-center gap-4 pr-16">
-            <div className="w-14 h-14 rounded-full overflow-hidden bg-white/20 flex items-center justify-center flex-none">
-              {avatarUrl
-                ? <img src={avatarUrl} alt="" className="w-full h-full object-cover" />
-                : <PawPrint className="w-6 h-6 text-white" />}
-            </div>
+            {/* Tap the pet to edit them. The ring is how much of their profile
+                is filled in — a finishable task, so it can reach 100% and
+                stop asking. */}
+            <button
+              onClick={() => setTab('profile')}
+              className="relative w-16 h-16 flex-none group"
+              aria-label={`Edit ${pet?.name || 'pet'} — profile ${completeness.percent}% complete`}
+              title={completeness.missing.length
+                ? `Profile ${completeness.percent}% — still to add: ${completeness.missing.join(', ')}`
+                : 'Profile complete'}
+            >
+              <svg viewBox="0 0 64 64" className="absolute inset-0 -rotate-90 w-16 h-16">
+                <circle cx="32" cy="32" r="29" fill="none"
+                        stroke="rgba(255,255,255,0.18)" strokeWidth="3" />
+                <circle
+                  cx="32" cy="32" r="29" fill="none"
+                  stroke={completeness.percent === 100 ? '#4ade80' : '#ffffff'}
+                  strokeWidth="3" strokeLinecap="round"
+                  strokeDasharray={`${(completeness.percent / 100) * 2 * Math.PI * 29} ${2 * Math.PI * 29}`}
+                  className="transition-all duration-500"
+                />
+              </svg>
+              <div className="absolute inset-[5px] rounded-full overflow-hidden bg-white/20 flex items-center justify-center group-hover:brightness-110 transition-all">
+                {avatarUrl
+                  ? <img src={avatarUrl} alt="" className="w-full h-full object-cover" />
+                  : <PawPrint className="w-6 h-6 text-white" />}
+              </div>
+            </button>
 
             <div className="flex-1 min-w-0">
               <button
@@ -152,6 +183,14 @@ export default function PetPage({
                     pet.analysis_count === 1 ? '' : 's'}`
                 )}
               </p>
+              {completeness.missing.length > 0 && tab !== 'profile' && (
+                <button
+                  onClick={() => setTab('profile')}
+                  className="font-roboto text-white/45 hover:text-white/80 text-xs mt-0.5 underline underline-offset-2 text-left"
+                >
+                  Profile {completeness.percent}% — add {completeness.missing[0]}
+                </button>
+              )}
             </div>
 
             <button
@@ -196,7 +235,7 @@ export default function PetPage({
       {/* Tabs */}
       <div className="sticky top-0 z-30 mt-5 border-b border-white/15 bg-black/10 backdrop-blur-md">
         <div className="max-w-4xl mx-auto px-4 md:px-6 flex gap-1 overflow-x-auto scroll-container">
-          {TABS.map(({ id, label, icon: Icon, closable }) => {
+          {TABS.map(({ id, label, icon: Icon, closable, onClose }) => {
             const on = tab === id;
             return (
               <div key={id} className="relative flex items-center flex-none">
@@ -211,8 +250,8 @@ export default function PetPage({
                 </button>
                 {closable && (
                   <button
-                    onClick={closeObservation}
-                    aria-label="Close this observation"
+                    onClick={onClose}
+                    aria-label={`Close ${label}`}
                     className="absolute right-2 p-1 rounded-md text-white/50 hover:text-white hover:bg-white/15 transition-colors"
                   >
                     <X className="w-3.5 h-3.5" />
@@ -235,6 +274,7 @@ export default function PetPage({
           onOpenVetReport={onOpenVetReport}
           onUpload={onAddObservation}
           onOpenAnalysis={openObservation}
+          onChanged={() => setReloadKey((k) => k + 1)}
         />
       )}
 

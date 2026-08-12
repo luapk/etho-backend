@@ -869,7 +869,6 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
         )
       ) : (
         <header className="py-6 px-6"><div className="max-w-5xl mx-auto flex flex-col items-center">
-          <img src="/etho-logo.png" alt="Etho" className="h-10" onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }} />
           <span className="font-roboto font-bold text-3xl text-white hidden">Etho</span>
           <p className="font-roboto text-white/60 text-sm mt-2">
             {headerNote || 'AI-powered pet behavior analysis'}

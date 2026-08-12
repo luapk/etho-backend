@@ -92,8 +92,9 @@ GET   /api/analyses/{id}/media          stored annotated clip/photo (404 once ev
 GET   /api/pets/{id}/vet-report?format=markdown|json&reason=...   pre-consultation document
 GET   /api/pets/{id}/timeline           unified feed: analyses + weight entries, chronological;
                                         each analysis carries its per-asset distress_curve
-                                        (sparkline-ready), zone, instrument total, quality grade,
-                                        context tag — built for a scrubbable timeline UI
+                                        (sparkline-ready), a 48-bucket audio_envelope +
+                                        vocal_events on the same time axis, zone, instrument
+                                        total, quality grade, context tag
 POST  /api/batch/upload                 batch import (photos+videos, max 30) — returns batch_id
 GET   /api/batch/{batch_id}             batch progress (in-memory; analyses persist regardless)
 POST  /api/pets/{id}/weights            log a weight (syncs profile weight_kg, returns screening)

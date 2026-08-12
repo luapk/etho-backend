@@ -3,9 +3,9 @@ import { motion } from 'framer-motion';
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip,
          ReferenceArea, ReferenceLine } from 'recharts';
 import { AlertTriangle, FileText, Scale, Video, Image as ImageIcon,
-         Wind, TrendingUp, TrendingDown, Minus, Plus, Camera, Check } from 'lucide-react';
+         Wind, TrendingUp, TrendingDown, Minus, Plus, Camera, Check, Trash2 } from 'lucide-react';
 import { getTimeline, getTrends, getPet, addWeight, fetchPoster, getCapturePlan,
-         updatePet, friendlyError } from '../api';
+         updatePet, deleteAnalysis, friendlyError } from '../api';
 
 /*
  * The longitudinal view — the reason the record layer exists.
@@ -65,7 +65,9 @@ function Tile({ label, children, sub }) {
   );
 }
 
-/** Inline sparkline of one clip's own distress curve. */
+/** One clip's distress curve, with each scored moment dotted in its own zone
+ *  colour — so a tile shows at a glance whether a calm clip had one bad
+ *  moment in it, which a single overall score cannot say. */
 function Sparkline({ curve }) {
   if (!curve?.length) return <div className="h-8" />;
   const W = 180, H = 32;
@@ -73,15 +75,51 @@ function Sparkline({ curve }) {
   const pts = curve.map((p) => [
     4 + (p.t_sec / tmax) * (W - 8),
     4 + (1 - p.distress_score / 100) * (H - 8),
+    ZONE[p.zone || zoneOf(p.distress_score)]?.color || '#e2e8f0',
   ]);
   const d = pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' ');
   const last = pts[pts.length - 1];
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-8" aria-hidden="true">
-      <path d={`${d} L${last[0]},${H} L${pts[0][0]},${H} Z`} fill="rgba(255,255,255,0.18)" />
-      <path d={d} fill="none" stroke="white" strokeWidth="1.6" strokeDasharray="3 3" opacity="0.85" />
+      <path d={`${d} L${last[0]},${H} L${pts[0][0]},${H} Z`} fill="rgba(255,255,255,0.16)" />
+      <path d={d} fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth="1.6" />
       {pts.map((p, i) => (
-        <circle key={i} cx={p[0]} cy={p[1]} r="2.4" fill="white" />
+        <circle key={i} cx={p[0]} cy={p[1]} r="3" fill={p[2]}
+                stroke="rgba(255,255,255,0.9)" strokeWidth="1" />
+      ))}
+    </svg>
+  );
+}
+
+/** The measured audio underneath, on the same time axis as the dots above:
+ *  the amplitude envelope, with a tick where each vocalization was measured.
+ *  Two strips sharing an axis answer "was it noisy when they were tense?" —
+ *  which neither strip answers alone. */
+function AudioStrip({ envelope, events, durationSec, present }) {
+  if (!present) {
+    return (
+      <div className="h-5 flex items-center">
+        <span className="font-roboto text-white/25 text-[10px]">No audio</span>
+      </div>
+    );
+  }
+  if (!envelope?.length) return <div className="h-5" />;
+  const W = 180, H = 18;
+  const bw = W / envelope.length;
+  const dur = durationSec || 1;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-5" aria-hidden="true">
+      {envelope.map((v, i) => {
+        const h = Math.max(1, v * (H - 5));
+        return <rect key={i} x={i * bw} y={H - 4 - h} width={Math.max(0.6, bw - 0.5)}
+                     height={h} fill="rgba(255,255,255,0.45)" rx="0.4" />;
+      })}
+      <line x1="0" y1={H - 3.5} x2={W} y2={H - 3.5} stroke="rgba(255,255,255,0.25)" strokeWidth="0.6" />
+      {/* Where a vocalization was actually measured. Sat on the baseline before
+          and got clipped by the viewBox edge. */}
+      {(events || []).map((e, i) => (
+        <circle key={i} cx={Math.min(W - 2, Math.max(2, (e.t_sec / dur) * W))} cy={H - 2} r="2"
+                fill="#38bdf8" stroke="rgba(255,255,255,0.85)" strokeWidth="0.5" />
       ))}
     </svg>
   );
@@ -133,7 +171,7 @@ function Poster({ analysisId, available, mediaType, zoneColor }) {
 }
 
 export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnalysis,
-                                   embedded = false, refreshKey = 0 }) {
+                                   embedded = false, refreshKey = 0, onChanged }) {
   const [pet, setPet] = useState(null);
   const [items, setItems] = useState([]);
   const [trends, setTrends] = useState(null);
@@ -142,6 +180,8 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
   const [weighing, setWeighing] = useState(false);
   const [newWeight, setNewWeight] = useState('');
   const [plan, setPlan] = useState(null);
+  const [deleting, setDeleting] = useState(null);      // analysis_id awaiting confirm
+  const [busyDelete, setBusyDelete] = useState(false);
 
   const load = () => {
     if (!petId) return;
@@ -171,6 +211,20 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
     })),
     [analyses]
   );
+
+  const removeObservation = async (analysisId) => {
+    setBusyDelete(true);
+    try {
+      await deleteAnalysis(analysisId);
+      setDeleting(null);
+      load();          // trend, baseline and counts are all recomputed
+      onChanged?.();
+    } catch (err) {
+      setError(friendlyError(err));
+    } finally {
+      setBusyDelete(false);
+    }
+  };
 
   const confirmBreed = async (breed) => {
     try {
@@ -389,11 +443,51 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                     );
                   }
                   const z = ZONE[item.zone] || ZONE.yellow;
+                  const pendingDelete = deleting === item.analysis_id;
                   return (
+                    <div key={item.analysis_id || idx} className="relative flex-none w-52">
+                    {/* Delete lives on the tile, but never inside the
+                        tap-to-open target: a separate button in the corner,
+                        and the confirmation covers the tile so the answer
+                        cannot be mis-tapped either. */}
                     <button
-                      key={item.analysis_id || idx}
+                      onClick={(e) => { e.stopPropagation(); setDeleting(item.analysis_id); }}
+                      aria-label="Delete this observation"
+                      className="absolute top-1.5 right-1.5 z-10 p-1.5 rounded-lg bg-black/40 hover:bg-red-500/80 text-white/70 hover:text-white transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+
+                    {pendingDelete && (
+                      <div className="absolute inset-0 z-20 rounded-2xl bg-slate-900/85 backdrop-blur-sm flex flex-col items-center justify-center gap-2 p-3 text-center">
+                        <p className="font-roboto text-white text-xs">
+                          Delete this {item.media_type === 'image' ? 'photo' : 'clip'} and
+                          everything measured from it?
+                        </p>
+                        <p className="font-roboto text-white/55 text-[10px]">
+                          {pet?.name}'s trend is worked out again without it.
+                        </p>
+                        <div className="flex gap-2 mt-1">
+                          <button
+                            onClick={() => removeObservation(item.analysis_id)}
+                            disabled={busyDelete}
+                            className="px-3 py-1.5 rounded-lg bg-red-500/85 hover:bg-red-500 disabled:opacity-50 text-white font-roboto text-xs font-bold"
+                          >
+                            {busyDelete ? 'Deleting…' : 'Delete'}
+                          </button>
+                          <button
+                            onClick={() => setDeleting(null)}
+                            className="px-3 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-white font-roboto text-xs"
+                          >
+                            Keep
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <button
                       onClick={() => onOpenAnalysis?.(item.analysis_id, item.date)}
-                      className="flex-none w-52 glass-card rounded-2xl overflow-hidden text-left transition-all hover:bg-white/25 focus:outline-none focus:ring-2 focus:ring-white"
+                      className="w-full glass-card rounded-2xl overflow-hidden text-left transition-all hover:bg-white/25 focus:outline-none focus:ring-2 focus:ring-white"
                     >
                       <Poster
                         analysisId={item.analysis_id}
@@ -425,6 +519,12 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                           </span>
                         </div>
                         <Sparkline curve={item.distress_curve} />
+                        <AudioStrip
+                          envelope={item.audio_envelope}
+                          events={item.vocal_events}
+                          durationSec={item.audio_duration_sec}
+                          present={item.audio_present}
+                        />
                         <div className="flex flex-wrap gap-1">
                           {item.context && (
                             <span className="px-1.5 py-0.5 rounded bg-white/15 border border-white/20 text-white/80 text-[10px] font-bold capitalize">
@@ -439,6 +539,7 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                         </div>
                       </div>
                     </button>
+                    </div>
                   );
                 })}
               </div>

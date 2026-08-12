@@ -564,6 +564,10 @@ def _ts_to_seconds(ts) -> float:
         return 0.0
 
 
+# Buckets in the per-tile audio miniature. A filmstrip tile is ~200px wide.
+_FEED_ENVELOPE_POINTS = 48
+
+
 def get_timeline_feed(pet_id: str, limit: int = 200) -> list:
     """One chronological feed merging analyses and weight entries, built for
     a scrubbable timeline UI. Each analysis item carries its own per-asset
@@ -585,6 +589,27 @@ def get_timeline_feed(pet_id: str, limit: int = 200) -> list:
                     "zone": ev.get("zone"),
                 })
         curve.sort(key=lambda p: p["t_sec"])
+
+        # A miniature of the measured audio, for the strip under the tile's
+        # distress dots. The full envelope is 200 buckets — far more than a
+        # 200px-wide sparkline can show, and thirty of them in one feed would
+        # be wasteful — so it is re-bucketed to _FEED_ENVELOPE_POINTS here
+        # rather than shipped whole and thrown away by the browser.
+        am = result.get("_audio_metrics", {}) or {}
+        env = am.get("envelope") or []
+        mini = []
+        if env:
+            n = _FEED_ENVELOPE_POINTS
+            step = len(env) / n
+            mini = [round(max(env[int(i * step):max(int((i + 1) * step), int(i * step) + 1)]), 2)
+                    for i in range(n)]
+        audio_dur = am.get("duration_analyzed_sec")
+        vocal = [{"t_sec": ev.get("timestamp_sec"),
+                  "pitch_hz": ev.get("pitch_hz"),
+                  "tonality": ev.get("tonality")}
+                 for ev in (am.get("vocalization_events") or [])
+                 if ev.get("timestamp_sec") is not None]
+
         items.append({
             "type": "analysis",
             "date": rec["created_at"],
@@ -600,6 +625,12 @@ def get_timeline_feed(pet_id: str, limit: int = 200) -> list:
             "srr_bpm": (result.get("_respiration", {}) or {}).get("breaths_per_min")
                        if (result.get("_respiration", {}) or {}).get("usable") else None,
             "distress_curve": curve,
+            # Measured audio, for the mini strip: the shape of the sound and
+            # where the vocalizations actually were.
+            "audio_present": bool(am.get("audio_present")),
+            "audio_envelope": mini,
+            "audio_duration_sec": audio_dur,
+            "vocal_events": vocal[:40],
         })
 
     for w in get_weights(pet_id):
