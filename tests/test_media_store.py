@@ -230,6 +230,44 @@ check("a rejected edit leaves the date alone",
       client.get(f"/api/analyses/{analysis_id}", headers=H1)
             .json()["analysis"]["created_at"].startswith("2026-03-15"))
 
+# ── Deleting an observation ──
+del_pet = client.post("/api/pets", json={"name": "Deletable", "species": "dog"},
+                      headers=H1).json()["pet"]
+own1 = client.get("/api/owners", headers=A).json()["owners"][0]["id"]
+del_ids = [pet_store.log_analysis(
+    del_pet["id"], {"overall_assessment": {"distress_score": sc, "zone": "green"}},
+    media_type="video", source_filename=f"d{i}.mp4", file_size_bytes=1, owner_id=own1)
+    for i, sc in enumerate([10, 20, 30, 90])]
+for a in del_ids:
+    fake_media(os.path.join(media_store.media_root(), f"{a}_poster.jpg"), 0.01)
+    fake_media(os.path.join(media_store.media_root(), f"{a}.mp4"), 0.05)
+
+before = pet_store.compute_trends(del_pet["id"])["baseline"]["mean"]
+victim = del_ids[-1]                       # the outlier at 90
+
+r = client.delete(f"/api/analyses/{victim}", headers=H2)
+check("other owner cannot delete (404)", r.status_code == 404, r.status_code)
+check("a refused delete leaves the row", pet_store.get_analysis(victim) is not None)
+
+r = client.delete(f"/api/analyses/{victim}", headers=H1)
+check("owner can delete", r.status_code == 200 and r.json()["deleted"] is True, r.text[:120])
+check("row is gone", pet_store.get_analysis(victim) is None)
+check("its poster is gone", media_store.has_poster(victim) is False)
+check("its clip is gone", media_store.has_media(victim) is False)
+check("the other observations are untouched",
+      all(pet_store.get_analysis(a) is not None for a in del_ids[:-1]))
+check("their media is untouched",
+      all(media_store.has_poster(a) and media_store.has_media(a) for a in del_ids[:-1]))
+check("it leaves the timeline",
+      victim not in [i.get("analysis_id") for i in
+                     client.get(f"/api/pets/{del_pet['id']}/timeline", headers=H1)
+                           .json()["timeline"]])
+check("deleting a bad capture takes it out of the maths",
+      pet_store.compute_trends(del_pet["id"])["baseline"]["mean"] != before,
+      "a deleted observation must stop affecting the baseline")
+check("deleting twice is a clean 404",
+      client.delete(f"/api/analyses/{victim}", headers=H1).status_code == 404)
+
 tl = client.get(f"/api/pets/{pet['id']}/timeline", headers=H1).json()["timeline"]
 entry = [i for i in tl if i["type"] == "analysis"][0]
 check("timeline feed carries has_poster", entry["has_poster"] is True)

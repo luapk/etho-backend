@@ -133,7 +133,7 @@ function Poster({ analysisId, available, mediaType, zoneColor }) {
 }
 
 export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnalysis,
-                                   embedded = false }) {
+                                   embedded = false, refreshKey = 0 }) {
   const [pet, setPet] = useState(null);
   const [items, setItems] = useState([]);
   const [trends, setTrends] = useState(null);
@@ -158,7 +158,7 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
       .finally(() => setLoading(false));
   };
 
-  useEffect(load, [petId]);
+  useEffect(load, [petId, refreshKey]);
 
   const analyses = useMemo(() => items.filter((i) => i.type === 'analysis'), [items]);
   const weights = useMemo(() => items.filter((i) => i.type === 'weight'), [items]);

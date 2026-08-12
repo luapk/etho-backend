@@ -465,6 +465,20 @@ def count_analyses() -> int:
         return 0
 
 
+def delete_analysis(analysis_id: str) -> bool:
+    """Remove one observation from the record.
+
+    A hard delete, not an archive flag. A guardian deleting a bad upload — the
+    wrong animal, a useless clip — means it should stop affecting the baseline,
+    and a soft-deleted row that still counted toward the trend would be a worse
+    lie than no row at all. Callers must delete the stored media separately;
+    the store owns rows, media_store owns files.
+    """
+    with _lock, _connect() as conn:
+        cur = conn.execute("DELETE FROM analyses WHERE id = ?", (analysis_id,))
+        return cur.rowcount > 0
+
+
 def analysis_media_audit(limit: int = 100000) -> list:
     """(id, pet_id, created_at) for every analysis, newest last.
 

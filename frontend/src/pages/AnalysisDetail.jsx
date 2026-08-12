@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { AlertTriangle, CalendarDays, Check } from 'lucide-react';
+import { AlertTriangle, CalendarDays, Check, Trash2 } from 'lucide-react';
 import Dashboard from './Dashboard';
-import { getAnalysis, getPet, fetchAnalysisMedia, setAnalysisDate, friendlyError } from '../api';
+import { getAnalysis, getPet, fetchAnalysisMedia, setAnalysisDate, deleteAnalysis,
+         friendlyError } from '../api';
 
 /*
  * One observation, reopened from the timeline.
@@ -19,7 +20,7 @@ import { getAnalysis, getPet, fetchAnalysisMedia, setAnalysisDate, friendlyError
  */
 
 export default function AnalysisDetail({ analysisId, onBack, embedded = false,
-                                        onDateChanged }) {
+                                        onDateChanged, onDeleted }) {
   const [record, setRecord] = useState(null);
   const [petName, setPetName] = useState('');
   const [mediaUrl, setMediaUrl] = useState(null);
@@ -28,6 +29,8 @@ export default function AnalysisDetail({ analysisId, onBack, embedded = false,
   const [editingDate, setEditingDate] = useState(false);
   const [dateInput, setDateInput] = useState('');
   const [savingDate, setSavingDate] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     let objectUrl = null;
@@ -181,6 +184,64 @@ export default function AnalysisDetail({ analysisId, onBack, embedded = false,
     </div>
   );
 
+  /* Deleting is offered HERE rather than on the timeline tile, and only after
+     the media and the analysis are on screen. A small × beside a tap-to-open
+     thumbnail is a mis-tap waiting to happen, and you should see what you are
+     about to destroy. Two steps, and the second one says what goes. */
+  const removeObservation = async () => {
+    setDeleting(true);
+    try {
+      await deleteAnalysis(analysisId);
+      onDeleted?.(analysisId);
+    } catch (e) {
+      setError(friendlyError(e));
+      setDeleting(false);
+    }
+  };
+
+  const deleteBlock = (
+    <div className="max-w-5xl mx-auto px-6 pb-12">
+      {confirmingDelete ? (
+        <div className="glass-card rounded-2xl p-5 border-2 border-red-400/50">
+          <p className="font-roboto font-bold text-white mb-1">
+            Delete this observation?
+          </p>
+          <p className="font-roboto text-white/70 text-sm mb-4">
+            The {record.media_type === 'image' ? 'photo' : 'clip'} and everything
+            measured from it are removed for good. {petName ? `${petName}'s` : 'Their'}{' '}
+            baseline and trend are worked out again from what's left — so if this was a
+            bad capture, it stops counting. This can't be undone.
+          </p>
+          <div className="flex gap-2 flex-wrap">
+            <button
+              onClick={removeObservation}
+              disabled={deleting}
+              className="flex items-center gap-2 px-5 py-3 rounded-xl bg-red-500/80 hover:bg-red-500 disabled:opacity-50 text-white font-roboto font-bold text-sm transition-colors"
+            >
+              <Trash2 className="w-4 h-4" />
+              {deleting ? 'Deleting…' : 'Yes, delete it'}
+            </button>
+            <button
+              onClick={() => setConfirmingDelete(false)}
+              disabled={deleting}
+              className="px-5 py-3 rounded-xl bg-white/15 hover:bg-white/25 text-white/85 font-roboto font-medium text-sm transition-colors"
+            >
+              Keep it
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          onClick={() => setConfirmingDelete(true)}
+          className="flex items-center gap-2 font-roboto text-white/50 hover:text-red-200 text-sm transition-colors"
+        >
+          <Trash2 className="w-4 h-4" />
+          Delete this observation
+        </button>
+      )}
+    </div>
+  );
+
   return (
     <>
       {dateBlock}
@@ -193,7 +254,7 @@ export default function AnalysisDetail({ analysisId, onBack, embedded = false,
         headerNote={embedded ? null : petName || null}
       />
       {mediaState && (
-        <div className="max-w-5xl mx-auto px-6 pb-10 -mt-6">
+        <div className="max-w-5xl mx-auto px-6 pb-6 -mt-6">
           {mediaState.reason === 'error' ? (
             <p className="font-roboto text-amber-200/90 text-xs text-center">
               The {record.media_type === 'image' ? 'photo' : 'clip'} couldn't be
@@ -208,6 +269,7 @@ export default function AnalysisDetail({ analysisId, onBack, embedded = false,
           )}
         </div>
       )}
+      {deleteBlock}
     </>
   );
 }

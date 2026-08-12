@@ -92,6 +92,11 @@ export const setAnalysisDate = (id, observedAt) =>
   client.patch(`/api/analyses/${id}`, { observed_at: observedAt })
         .then((r) => r.data.analysis);
 
+/** Permanently remove an observation, its poster and its clip.
+ *  The pet's baseline and trend are recomputed from what's left. */
+export const deleteAnalysis = (id) =>
+  client.delete(`/api/analyses/${id}`).then((r) => r.data);
+
 export const getVetReport = (id, reason) =>
   client
     .get(`/api/pets/${id}/vet-report`, {

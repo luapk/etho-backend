@@ -1199,7 +1199,7 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
         </motion.div>
 
         {/* Footer */}
-        <Footer />
+        {!embedded && <Footer />}
       </div>
     </div>
   );

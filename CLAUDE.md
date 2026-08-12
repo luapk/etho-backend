@@ -86,6 +86,7 @@ GET   /api/pets/{id}/capture-plan       what's worth filming next, and why (bree
 GET   /api/pets/{id}/breed-context      population predispositions for the CONFIRMED breed
 GET   /api/analyses/{id}                full stored raw result (provenance) + has_poster/has_media
 PATCH /api/analyses/{id}                correct the observation date (stamped capture_time_source=manual)
+DELETE /api/analyses/{id}               remove an observation, its poster and its clip (permanent)
 GET   /api/analyses/{id}/poster         timeline thumbnail (JPEG, owner-scoped)
 GET   /api/analyses/{id}/media          stored annotated clip/photo (404 once evicted)
 GET   /api/pets/{id}/vet-report?format=markdown|json&reason=...   pre-consultation document
@@ -116,6 +117,8 @@ Its primary output is not a warning but a **capture plan** (`GET /api/pets/{id}/
 Deliberately NOT built: any combined breed × observation risk score (a diagnosis with extra steps, and a medical-device claim), odds ratios shown to guardians (meaningless without absolute base rates), and breed life-expectancy figures.
 
 **Weight screening** (`breed_reference.py`): typical adult ranges for ~40 dog and ~16 cat breeds (substring-matched, species-level fallback for cats only — dog breeds vary too widely). Status below/within/above range with percent outside. Always framed as a rough screen: body condition score (BCS) by a vet is the clinical standard, and every output says so. The vet report gets a Weight section (latest vs range, delta over time, full log).
+
+**Deleting an observation is a hard delete** (`DELETE /api/analyses/{id}`): the row, the poster and the clip all go. Not a soft-delete flag — a guardian removing a bad capture (wrong animal, useless clip) means it should stop affecting the baseline, and an archived row that still counted toward the trend would be a worse lie than no row at all. The control lives in the observation detail view, after the media and analysis are on screen, rather than as an × on a timeline tile: a small delete target beside a tap-to-open thumbnail is a mis-tap waiting to happen, and you should see what you are about to destroy. Two steps, and the second names what goes.
 
 **Every observation keeps its picture** (`media_store.py`): the timeline filmstrip shows a stored poster per capture, and tapping one reopens the complete analysis — the same screen the guardian saw on upload, rendered from the stored `full_json`, not a cut-down "history view" that would drift into a worse product. See *Annotated video storage* below for the retention rules.
 

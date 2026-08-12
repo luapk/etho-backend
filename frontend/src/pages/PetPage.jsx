@@ -231,6 +231,7 @@ export default function PetPage({
         <Timeline
           petId={petId}
           embedded
+          refreshKey={reloadKey}
           onOpenVetReport={onOpenVetReport}
           onUpload={onAddObservation}
           onOpenAnalysis={openObservation}
@@ -251,7 +252,19 @@ export default function PetPage({
           analysisId={detail.id}
           embedded
           onBack={closeObservation}
-          onDateChanged={(iso) => setDetail((d) => ({ ...d, date: iso }))}
+          onDateChanged={(iso) => {
+            setDetail((d) => ({ ...d, date: iso }));
+            // The date decides where it sits on the timeline, so that view is
+            // now stale too.
+            setReloadKey((k) => k + 1);
+          }}
+          onDeleted={() => {
+            // Close the tab it was in and rebuild the timeline and the header
+            // count around what's left.
+            setDetail(null);
+            setTab('timeline');
+            setReloadKey((k) => k + 1);
+          }}
         />
       )}
     </div>

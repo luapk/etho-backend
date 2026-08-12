@@ -1041,6 +1041,22 @@ async def update_analysis(analysis_id: str, patch: AnalysisUpdate,
     return {"success": True, "analysis": pet_store.get_analysis(analysis_id)}
 
 
+@app.delete("/api/analyses/{analysis_id}")
+async def delete_analysis(analysis_id: str, auth: dict = Depends(get_auth)):
+    """Remove an observation and everything stored with it.
+
+    Permanent: the analysis JSON, the poster and the clip all go. The pet's
+    baseline and trend are computed from what remains, so removing a bad
+    capture genuinely takes it out of the maths rather than hiding it — which
+    is the point of deleting it.
+    """
+    rec = _authorized_analysis(analysis_id, auth)
+    media_store.delete_for_analysis(analysis_id)
+    deleted = pet_store.delete_analysis(analysis_id)
+    print(f"  → Deleted analysis {analysis_id} (pet: {rec.get('pet_id') or 'unassigned'})")
+    return {"success": True, "deleted": deleted, "pet_id": rec.get("pet_id")}
+
+
 @app.get("/api/analyses/{analysis_id}/poster")
 async def get_analysis_poster(analysis_id: str, auth: dict = Depends(get_auth)):
     """The timeline thumbnail for one analysis — a downscaled still cut from
