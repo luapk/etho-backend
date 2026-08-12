@@ -989,7 +989,7 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
             <h2 className="font-roboto font-bold text-xl text-white flex items-center gap-2"><Volume2 className="w-5 h-5 text-white/70" />Audio Analysis</h2>
             {expandedSections.audio ? <ChevronUp className="w-5 h-5 text-white/50" /> : <ChevronDown className="w-5 h-5 text-white/50" />}
           </button>
-          {expandedSections.audio && <div className="px-6 pb-6"><AudioWaveform events={audio_analysis?.vocalizations_detected || []} environmentalSounds={audio_analysis?.environmental_sounds || []} duration={duration || 17} currentTime={currentTime} isPlaying={isPlaying} onSeek={handleMarkerClick} videoContext={video_context} /></div>}
+          {expandedSections.audio && <div className="px-6 pb-6"><AudioWaveform events={audio_analysis?.vocalizations_detected || []} environmentalSounds={audio_analysis?.environmental_sounds || []} duration={analysisData._audio_metrics?.duration_analyzed_sec || duration || 17} currentTime={currentTime} isPlaying={isPlaying} onSeek={handleMarkerClick} videoContext={video_context} envelope={analysisData._audio_metrics?.envelope} measuredEvents={analysisData._audio_metrics?.vocalization_events} /></div>}
         </motion.div>
         )}
 

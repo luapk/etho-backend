@@ -131,7 +131,7 @@ from app.prompts.ethological_prompt import ETHOLOGICAL_SYSTEM_PROMPT, PROMPT_VER
 from app.services import video_annotator, vet_report as vr
 
 check("prompt asks for evidence timestamps", "evidence_timestamp" in ETHOLOGICAL_SYSTEM_PROMPT)
-check("prompt version bumped", PROMPT_VERSION == "6.3", PROMPT_VERSION)
+check("prompt version bumped", PROMPT_VERSION == "6.4", PROMPT_VERSION)
 check("draw threshold stricter than metrics", video_annotator.DRAW_CONF > 0.3)
 check("spine bands", video_annotator._spine_band(3) == "relaxed"
       and video_annotator._spine_band(20) == "moderate"

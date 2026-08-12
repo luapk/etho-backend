@@ -231,6 +231,18 @@ def _build_audio_section(audio_metrics: dict) -> str:
         "(bark/meow/growl/purr/whine); the measurements tell you its pitch and "
         "quality. If your identification conflicts with a measurement, report both "
         "and note the discrepancy.\n"
+        "\nPHYSICAL CONSTRAINTS ON IDENTIFICATION — these are properties of the "
+        "sound, not preferences, and context cannot override them:\n"
+        "  - A cat PURR has a fundamental of roughly 20-40 Hz. The 220-520 Hz "
+        "band above is the CRY embedded in a solicitation purr, not the purr "
+        "itself. A tonal sound measured above ~600 Hz is NOT a purr no matter "
+        "how relaxed the animal looks — it is a meow, chirp or trill. Relaxed "
+        "body language is evidence about the ANIMAL, never about the frequency.\n"
+        "  - A growl is low and broadband; a measured high, tonal sound is not "
+        "a growl.\n"
+        "  - Purring and meowing are different vocalizations and can co-occur; "
+        "name the one the measurement supports, and say if you believe another "
+        "is present but unmeasured.\n"
     )
     return s
 

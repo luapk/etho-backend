@@ -193,5 +193,51 @@ _m = _svc3.summarize_metrics(_nokp)
 check("no face_visibility reported without keypoints", "face_visibility" not in _m, _m)
 check("detection_coverage still reported", _m["detection_coverage"] == 1.0)
 
+# ── Audio envelope: the waveform the UI draws must BE the audio ──
+# It used to be Math.random() shaped by a sine wave, on a panel that also
+# prints measured frequencies. These assert the shape is the sound.
+import wave, subprocess                                     # noqa: E402
+from app.services.audio_service import AudioService         # noqa: E402
+
+_sr = 22050
+_t = np.arange(int(_sr * 4)) / _sr
+_y = np.zeros_like(_t)
+_y[:_sr] = 0.6 * np.sin(2 * np.pi * 500 * _t[:_sr])                    # 0-1s, quieter
+_y[int(2.5 * _sr):int(3.0 * _sr)] = 0.9 * np.sin(2 * np.pi * 1200 * _t[:int(0.5 * _sr)])
+_wav = os.path.join(tempfile.mkdtemp(), "tone.wav")
+_mp4 = _wav.replace(".wav", ".mp4")
+with wave.open(_wav, "wb") as _w:
+    _w.setnchannels(1); _w.setsampwidth(2); _w.setframerate(_sr)
+    _w.writeframes((_y * 32767).astype("<i2").tobytes())
+
+_svc = AudioService()
+if _svc.available and subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+         "-i", "color=c=black:s=64x64:d=4", "-i", _wav, "-shortest",
+         "-c:v", "libx264", "-c:a", "aac", _mp4]).returncode == 0:
+    _m = _svc.analyze(_mp4)
+    _env = _m.get("envelope")
+    check("envelope returned", isinstance(_env, list) and len(_env) > 1)
+    check("envelope is bounded 0..1", all(0.0 <= v <= 1.0 for v in _env))
+    check("envelope is capped in size", len(_env) <= 200, len(_env))
+    _peak_t = (_env.index(max(_env)) / len(_env)) * _m["duration_analyzed_sec"]
+    check("envelope peaks where the loud burst is", 2.3 < _peak_t < 3.1, _peak_t)
+    _mid = _env[int(len(_env) * 0.35):int(len(_env) * 0.55)]
+    check("silence reads as silence", max(_mid) < 0.05, max(_mid))
+    _quiet_t = _env[:int(len(_env) * 0.2)]
+    check("quieter tone is drawn quieter than the burst",
+          0.4 < max(_quiet_t) < 0.85, max(_quiet_t))
+    _evs = _m.get("vocalization_events", [])
+    check("both sounds segmented", len(_evs) == 2, [e["timestamp_sec"] for e in _evs])
+    check("event timings are measured, not guessed",
+          _evs[0]["timestamp_sec"] < 0.5 and 2.3 < _evs[1]["timestamp_sec"] < 2.8, _evs)
+    check("pitch measured within 5% of the true tone",
+          abs(_evs[1]["pitch_hz"] - 1200) / 1200 < 0.05, _evs[1]["pitch_hz"])
+    check("a 1200 Hz tone is far above any purr fundamental",
+          _evs[1]["pitch_hz"] > 600,
+          "the UI flags a 'purr' identification above 600 Hz as contradicted")
+else:
+    print("  SKIP audio envelope (ffmpeg/scipy unavailable)")
+
 print(f"\n{'='*40}\n{ok} passed, {fail} failed")
 sys.exit(1 if fail else 0)

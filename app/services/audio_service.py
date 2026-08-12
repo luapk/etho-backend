@@ -54,6 +54,10 @@ _COUGH_MAX_SEC = 0.6
 _COUGH_FLATNESS_MIN = 0.5
 
 
+# Buckets in the amplitude envelope handed to the UI.
+_ENVELOPE_POINTS = 200
+
+
 def _morton_inference(pitch_hz, flatness) -> str:
     """Heuristic first-pass label from Morton's motivation-structural rules.
     Measured pitch + tonality → likely motivational category. Priming only."""
@@ -335,9 +339,21 @@ class AudioService:
         voiced_pitches = [ev["pitch_hz"] for ev in events if ev["pitch_hz"] is not None]
         active_time = float(active.sum()) * frame_dt
 
+        # Downsampled amplitude envelope, so the UI can draw the ACTUAL sound
+        # instead of inventing a waveform. RMS per bucket, normalised to its own
+        # peak — it is a shape, not a calibrated level, and nothing is measured
+        # from it. ~200 buckets is plenty for a strip a few hundred pixels wide.
+        rms = np.sqrt(frame_energy)
+        buckets = min(_ENVELOPE_POINTS, rms.size) or 1
+        edges = np.linspace(0, rms.size, buckets + 1).astype(int)
+        env = np.array([rms[a:b].max() if b > a else 0.0
+                        for a, b in zip(edges[:-1], edges[1:])])
+        peak = float(env.max()) or 1.0
+
         summary = {
             "audio_present": True,
             "duration_analyzed_sec": round(duration, 1),
+            "envelope": [round(float(v / peak), 3) for v in env],
             "vocal_activity_coverage": round(active_time / max(duration, eps), 2),
             "vocalization_event_count": len(events),
             "vocalization_events": events[:20],  # cap injected list
