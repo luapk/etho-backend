@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 
 // Zone colors with gradient support
 const ZONE_COLORS = {
@@ -56,6 +56,19 @@ const getContextualDescription = (event, videoContext) => {
    it is a meow, chirp or trill. Used to flag the identification against the
    measurement rather than letting one quietly overrule the other. */
 const PURR_MAX_F0_HZ = 600;
+
+/** "540 Hz" for one, "540–1560 Hz" for several. */
+const pitchRange = (hz = []) => {
+  if (!hz.length) return '';
+  const lo = Math.min(...hz), hi = Math.max(...hz);
+  return lo === hi ? `${lo} Hz` : `${Math.round(lo)}–${Math.round(hi)} Hz`;
+};
+
+/** Identified as a purr but measured far above a purr's fundamental. */
+const contradicted = (e) =>
+  /purr/i.test(`${e.type || ''} ${e.subtype || ''}`)
+  && e._pitches?.length
+  && Math.min(...e._pitches) > PURR_MAX_F0_HZ;
 
 /** Measured events carry seconds; the model's carry "m:ss". Show both as m:ss. */
 const fmtClock = (t) => {
@@ -220,6 +233,34 @@ function AudioWaveform({ events = [], environmentalSounds = [], duration = 30, c
 
   const hasRealWaveform = Array.isArray(envelope) && envelope.length > 1;
 
+  /* Collapse consecutive events with the same identification into one row.
+     Keeps the count, the time span, and the measured pitch range — which is
+     the information the eight separate rows were carrying between them. */
+  const grouped = useMemo(() => {
+    const out = [];
+    allEvents.forEach((e) => {
+      const key = `${e.type || ''}|${e.subtype || ''}|${e.isEnvironmental ? 'env' : 'voc'}`;
+      const last = out[out.length - 1];
+      if (last && last._key === key) {
+        last._count += 1;
+        last._lastTs = e.timestamp_start;
+        if (e.measured?.pitch_hz != null) last._pitches.push(e.measured.pitch_hz);
+        return;
+      }
+      out.push({
+        ...e,
+        _key: key,
+        _count: 1,
+        _firstTs: e.timestamp_start,
+        _lastTs: e.timestamp_start,
+        _pitches: e.measured?.pitch_hz != null ? [e.measured.pitch_hz] : [],
+      });
+    });
+    return out;
+  }, [allEvents]);
+
+  const [openRow, setOpenRow] = useState(null);
+
   // Get unique event types for legend
   const eventTypes = useMemo(() => {
     const types = new Map();
@@ -323,10 +364,15 @@ function AudioWaveform({ events = [], environmentalSounds = [], duration = 30, c
         </div>
       )}
       
-      {/* Event List */}
-      {allEvents && allEvents.length > 0 && (
+      {/* Event List.
+          Repeats are collapsed: eight rows each saying "Purr — Contentment,
+          high pitch, tonal" is not eight findings, it is one finding heard
+          eight times, and printing it eight times buries anything that is
+          actually different. The reasoning behind each is one tap away rather
+          than four paragraphs deep. */}
+      {grouped.length > 0 && (
         <div className="mt-4 space-y-2">
-          {allEvents.slice(0, 8).map((event, idx) => {
+          {grouped.slice(0, 6).map((event, idx) => {
             const zone = event.isEnvironmental ? 'yellow' : getVocalizationZone(event.type, event.subtype);
             const colors = ZONE_COLORS[zone];
             const description = event.isEnvironmental ? `🔊 ${event.subtype}` : getContextualDescription(event, videoContext);
@@ -339,54 +385,65 @@ function AudioWaveform({ events = [], environmentalSounds = [], duration = 30, c
                 onClick={() => onSeek && onSeek(parseTs(event.timestamp_start) || 0)}
               >
                 <span className="font-roboto text-white/50 text-xs font-mono whitespace-nowrap min-w-[40px]">
-                  {fmtClock(event.timestamp_start)}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <span className="font-roboto text-white text-sm font-medium capitalize">
-                    {description}
-                  </span>
-                  {event.unmatched && (
-                    <span className="ml-2 font-roboto text-white/40 text-[10px] uppercase tracking-wide">
-                      time estimated
+                  {fmtClock(event._firstTs)}
+                  {event._count > 1 && (
+                    <span className="block text-white/30">
+                      –{fmtClock(event._lastTs)}
                     </span>
                   )}
+                </span>
+                <div className="flex-1 min-w-0">
+                  {/* One line: what it was, how many, and the measured pitch. */}
+                  <p className="font-roboto text-white text-sm font-medium capitalize">
+                    {description}
+                    {event._count > 1 && (
+                      <span className="text-white/50 font-normal normal-case"> ×{event._count}</span>
+                    )}
+                    {event.unmatched && (
+                      <span className="ml-2 font-roboto text-white/40 text-[10px] uppercase tracking-wide normal-case">
+                        time estimated
+                      </span>
+                    )}
+                  </p>
 
-                  {/* Measured, and labelled as such — pitch, tonality and the
-                      Morton reading come from signal processing, not the model. */}
-                  {event.measured && (
-                    <p className="font-roboto text-white/55 text-xs mt-1 font-mono">
-                      {event.measured.pitch_hz != null
-                        ? `${event.measured.pitch_hz} Hz`
-                        : 'unvoiced'}
-                      {event.measured.pitch_contour ? ` · ${event.measured.pitch_contour}` : ''}
-                      {event.measured.tonality ? ` · ${event.measured.tonality}` : ''}
-                      {event.measured.duration_sec ? ` · ${event.measured.duration_sec}s` : ''}
+                  {event._pitches.length > 0 && (
+                    <p className="font-roboto text-white/55 text-xs mt-0.5 font-mono">
+                      {pitchRange(event._pitches)}
+                      {event.measured?.tonality ? ` · ${event.measured.tonality}` : ''}
                       <span className="text-white/35"> · measured</span>
                     </p>
                   )}
-                  {event.measured?.morton_inference && (
-                    <p className="font-roboto text-white/45 text-xs mt-0.5">
-                      {event.measured.morton_inference}
-                    </p>
-                  )}
 
-                  {/* Where the name and the number disagree, say so. A purr has
-                      a fundamental near 25 Hz; anything up at 1 kHz is a meow
-                      or chirp however it is labelled. Reporting the conflict is
-                      the rule everywhere else in this codebase. */}
-                  {event.measured?.pitch_hz != null
-                    && /purr/i.test(`${event.type || ''} ${event.subtype || ''}`)
-                    && event.measured.pitch_hz > PURR_MAX_F0_HZ && (
+                  {contradicted(event) && (
                     <p className="font-roboto text-amber-200/90 text-xs mt-1">
-                      Identified as a purr, but measured at {event.measured.pitch_hz} Hz —
-                      a purr's fundamental is around 20–40 Hz, so this is more
-                      likely a meow, chirp or trill. Both are shown; neither is
-                      overruled.
+                      Measured at {pitchRange(event._pitches)} — too high for a purr
+                      (a purr's fundamental is 20–40 Hz). More likely a meow, chirp
+                      or trill.
                     </p>
                   )}
 
-                  {event.interpretation && (
-                    <p className="font-roboto text-white/50 text-xs mt-1">{event.interpretation}</p>
+                  {(event.measured?.morton_inference || event.interpretation) && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={(ev) => { ev.stopPropagation(); setOpenRow(openRow === idx ? null : idx); }}
+                        className="font-roboto text-white/45 hover:text-white/80 text-xs mt-1 underline underline-offset-2"
+                      >
+                        {openRow === idx ? 'Hide reasoning' : 'Why this reading?'}
+                      </button>
+                      {openRow === idx && (
+                        <div className="mt-1.5 space-y-1">
+                          {event.measured?.morton_inference && (
+                            <p className="font-roboto text-white/50 text-xs">
+                              {event.measured.morton_inference}
+                            </p>
+                          )}
+                          {event.interpretation && (
+                            <p className="font-roboto text-white/50 text-xs">{event.interpretation}</p>
+                          )}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
                 <span className="px-2 py-0.5 rounded text-xs font-roboto font-medium"

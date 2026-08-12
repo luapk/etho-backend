@@ -131,6 +131,13 @@ export default function AnalysisDetail({ analysisId, onBack, embedded = false,
     }
   };
 
+  const noun = record.media_type === 'image' ? 'photo' : 'clip';
+  const mediaNote = !mediaState ? null
+    : mediaState.reason === 'error'
+      ? `The ${noun} couldn't be loaded — ${mediaState.detail} Everything below is unaffected.`
+      : `No ${noun} is stored for this observation — either it predates Etho keeping media, `
+        + `or it has been cleared to make room. Everything measured from it is kept.`;
+
   const dateBlock = (
     <div className={`max-w-5xl mx-auto px-6 ${embedded ? 'pt-4' : 'pt-2'}`}>
       {editingDate ? (
@@ -249,26 +256,11 @@ export default function AnalysisDetail({ analysisId, onBack, embedded = false,
         analysisData={record.full_json}
         videoUrl={mediaUrl}
         mediaType={record.media_type}
+        mediaNote={mediaNote}
         onBack={onBack}
         embedded={embedded}
         headerNote={embedded ? null : petName || null}
       />
-      {mediaState && (
-        <div className="max-w-5xl mx-auto px-6 pb-6 -mt-6">
-          {mediaState.reason === 'error' ? (
-            <p className="font-roboto text-amber-200/90 text-xs text-center">
-              The {record.media_type === 'image' ? 'photo' : 'clip'} couldn't be
-              loaded — {mediaState.detail} The analysis below is unaffected.
-            </p>
-          ) : (
-            <p className="font-roboto text-white/50 text-xs text-center">
-              No {record.media_type === 'image' ? 'photo' : 'clip'} is stored for
-              this observation — either it predates Etho keeping media, or it has
-              been cleared to make room. Everything measured from it is kept.
-            </p>
-          )}
-        </div>
-      )}
       {deleteBlock}
     </>
   );

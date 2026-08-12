@@ -384,7 +384,7 @@ const MarkerInfoModal = ({ marker, onClose }) => {
 };
 
 function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, headerNote,
-                    embedded = false }) {
+                    embedded = false, mediaNote = null }) {
   const [expandedSections, setExpandedSections] = useState({ audio: true, interpret: true, didyouknow: true, research: false });
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -517,7 +517,7 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
           time: timeSeconds, 
           label: label, 
           eventType: eventType,
-          score: t.distress_score || distressScore, 
+          score: t.distress_score ?? null,   // the only real per-moment score
           zone: t.zone || getBehaviorZone(label),
           evidence: t.evidence || []
         });
@@ -535,7 +535,6 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
           time: timeSeconds,
           label: label,
           eventType: 'behavioral',
-          score: line.zone === 'red' ? 75 : line.zone === 'yellow' ? 50 : 25,
           zone: line.zone || 'yellow',
           evidence: []
         });
@@ -553,7 +552,6 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
           time: timeSeconds,
           label: label,
           eventType: 'audio',
-          score: v.type?.toLowerCase().includes('growl') || v.type?.toLowerCase().includes('hiss') ? 70 : 45,
           zone: getBehaviorZone(label),
           evidence: [v.interpretation || '']
         });
@@ -570,7 +568,6 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
           time: timeSeconds,
           label: m.behavior,
           eventType: 'behavioral',
-          score: distressScore,
           zone: getBehaviorZone(m.behavior),
           evidence: [m.significance || '']
         });
@@ -586,7 +583,6 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
           time: timeSeconds,
           label: `${f.code}: ${f.description}`,
           eventType: 'behavioral',
-          score: f.valence === 'negative' ? 60 : f.valence === 'positive' ? 25 : 45,
           zone: f.valence === 'negative' ? 'red' : f.valence === 'positive' ? 'green' : 'yellow',
           evidence: [f.code]
         });
@@ -594,19 +590,42 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
     }
     
     markers.sort((a,b) => a.time - b.time);
-    
+
+    /* THE CURVE IS THE DISTRESS TIMELINE. Nothing else.
+     *
+     * Every other marker source used to contribute an invented number to it:
+     * a vocalization that wasn't a growl scored a flat 45, a POV line scored
+     * 25/50/75 from its zone, a FACS code 25/45/60 from its valence. So five
+     * purrs from a contented cat pinned the whole line at 45 and painted a
+     * relaxed animal amber. A purr is not moderate distress, and a sound
+     * should not be able to move a distress score by existing.
+     *
+     * The analysis already scores distress per moment. That is the line.
+     * Audio, FACS and POV events are ANNOTATIONS placed on it — they mark
+     * when something happened, and take their height from the curve. */
+    const curve = markers
+      .filter(m => typeof m.score === 'number')
+      .map(m => ({ t: m.time, v: m.score }))
+      .sort((a, b) => a.t - b.t);
+
+    const scoreAt = (t) => {
+      if (!curve.length) return distressScore;
+      if (t <= curve[0].t) return curve[0].v;
+      if (t >= curve[curve.length - 1].t) return curve[curve.length - 1].v;
+      for (let k = 1; k < curve.length; k++) {
+        if (t <= curve[k].t) {
+          const a = curve[k - 1], b = curve[k];
+          const span = b.t - a.t;
+          return span <= 0 ? b.v : a.v + ((t - a.t) / span) * (b.v - a.v);
+        }
+      }
+      return distressScore;
+    };
+
     // Build chart points
     for (let i = 0; i <= total * 2; i++) {
       const t = i / 2, timeLabel = `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
-      const nearby = markers.filter(m => Math.abs(m.time - t) < 2);
-      // No synthetic wobble. This used to add Math.sin(i)*5 between markers,
-      // which drew a wavering line implying moment-to-moment measurement that
-      // was never taken — and could push a point across a zone boundary on
-      // nothing but a sine wave. Between scored moments the line now simply
-      // interpolates, which is the honest shape of what we know.
-      const score = nearby.length > 0
-        ? nearby.reduce((s, m) => s + m.score, 0) / nearby.length
-        : distressScore;
+      const score = scoreAt(t);
       const exact = markers.find(m => Math.abs(m.time - t) < 0.5);
       points.push({ 
         time: timeLabel, 
@@ -778,6 +797,12 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
         )}
 
         {/* Video with enhanced subtitles */}
+        {!videoUrl && mediaNote && (
+          <div className="glass-card rounded-2xl p-6 text-center">
+            <Camera className="w-8 h-8 text-white/35 mx-auto mb-2" />
+            <p className="font-roboto text-white/60 text-sm">{mediaNote}</p>
+          </div>
+        )}
         {videoUrl && (
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="glass-card rounded-2xl overflow-hidden">
             <div className="relative">

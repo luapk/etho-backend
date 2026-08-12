@@ -4,6 +4,7 @@ import { ArrowLeft, Camera, Check, Trash2, PawPrint, AlertTriangle,
          CalendarRange, Loader } from 'lucide-react';
 import { getPet, updatePet, uploadPetAvatar, deletePetAvatar, fetchPetAvatar,
          getBreedContext, friendlyError } from '../api';
+import AvatarCropper from '../components/AvatarCropper';
 
 /*
  * One pet's profile, editable.
@@ -46,6 +47,7 @@ export default function PetProfile({ petId, onBack, onViewTimeline, onChanged,
   const [form, setForm] = useState(null);
   const [avatarUrl, setAvatarUrl] = useState(null);
   const [avatarBusy, setAvatarBusy] = useState(false);
+  const [pendingPhoto, setPendingPhoto] = useState(null);   // awaiting framing
   const [breedCtx, setBreedCtx] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -81,14 +83,22 @@ export default function PetProfile({ petId, onBack, onViewTimeline, onChanged,
     return () => { if (urlRef.current) URL.revokeObjectURL(urlRef.current); };
   }, [petId]);
 
-  const pickAvatar = async (e) => {
+  const pickAvatar = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setAvatarBusy(true);
     setError(null);
+    // Frame it first. A centre crop is a guess and usually puts the floor in
+    // the circle instead of the face.
+    setPendingPhoto(file);
+    e.target.value = '';
+  };
+
+  const saveCropped = async (cropped) => {
+    setAvatarBusy(true);
     try {
-      await uploadPetAvatar(petId, file);
+      await uploadPetAvatar(petId, cropped);
       await loadAvatar();
+      setPendingPhoto(null);
       onChanged?.();
     } catch (err) {
       setError(friendlyError(err));
@@ -177,21 +187,32 @@ export default function PetProfile({ petId, onBack, onViewTimeline, onChanged,
           </button>
         )}
 
+        {pendingPhoto && (
+          <div className="mb-6">
+            <AvatarCropper
+              file={pendingPhoto}
+              busy={avatarBusy}
+              onCancel={() => setPendingPhoto(null)}
+              onCropped={saveCropped}
+            />
+          </div>
+        )}
+
         {/* Portrait */}
         <motion.div
           initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
-          className="flex flex-col items-center mb-6 mt-1"
+          className={`flex flex-col items-center mb-6 mt-1 ${pendingPhoto ? 'hidden' : ''}`}
         >
           <button
             onClick={() => fileRef.current?.click()}
             disabled={avatarBusy}
-            className="relative w-32 h-32 rounded-full overflow-hidden bg-white/15 ring-2 ring-white/30 hover:ring-white/60 transition-all group"
+            className="relative w-[10.4rem] h-[10.4rem] rounded-full overflow-hidden bg-white/15 ring-2 ring-white/30 hover:ring-white/60 transition-all group"
           >
             {avatarUrl ? (
               <img src={avatarUrl} alt={form.name} className="w-full h-full object-cover" />
             ) : (
               <div className="w-full h-full flex items-center justify-center">
-                <PawPrint className="w-12 h-12 text-white/50" />
+                <PawPrint className="w-16 h-16 text-white/50" />
               </div>
             )}
             <div className="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
