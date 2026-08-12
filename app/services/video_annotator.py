@@ -2,7 +2,10 @@
 Video annotation service.
 
 Renders a copy of the input video with:
-  - Colour-coded bounding box per detected pet (green/yellow/red = distress zone)
+  - Colour-coded outline per detected pet (green/yellow/red = distress zone) —
+    the segmentation contour when a -seg model is loaded, a bounding box when
+    only a detector is
+  - A fading centroid trail showing where the animal has just been
   - Two-line tag on the box: what the animal is doing (AI reading, from the
     timeline entry in force) over what was detected and how sure (measured)
   - YOLO skeleton overlay (keypoints + connections)
@@ -50,6 +53,16 @@ SKELETON_CONNECTIONS = [
     (5, 11), (6, 12), (11, 12),
     (11, 13), (13, 15), (12, 14), (14, 16),
 ]
+
+
+def _box_area(a) -> float:
+    x1, y1, x2, y2 = a.bbox
+    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
+
+
+def _centroid(bbox) -> tuple:
+    x1, y1, x2, y2 = bbox
+    return (int((x1 + x2) / 2), int((y1 + y2) / 2))
 
 
 def _zone_color(zone: str) -> tuple:
@@ -137,7 +150,7 @@ def _state_phrase(event: Optional[dict]) -> str:
     return raw[:1].upper() + raw[1:]
 
 
-def _bbox(frame, bbox, color, state: str, measured: str):
+def _caption_chip(frame, anchor, color, state: str, measured: str):
     """Box plus a two-line caption, and the two lines are deliberately unequal:
 
         line 1   what the animal is DOING   (AI reading — larger)
@@ -149,9 +162,7 @@ def _bbox(frame, bbox, color, state: str, measured: str):
     everywhere else.
     """
     u = _ui_scale(frame)
-    th_line = max(2, int(2 * u))
-    x1, y1, x2, y2 = map(int, bbox)
-    cv2.rectangle(frame, (x1, y1), (x2, y2), color, th_line)
+    x1, y1 = map(int, anchor)
 
     fs1, fs2 = 0.52 * u, 0.38 * u
     pad = int(4 * u)
@@ -181,6 +192,88 @@ def _bbox(frame, bbox, color, state: str, measured: str):
     # the hardest to read.
     cv2.putText(frame, measured, (x1 + pad, y),
                 cv2.FONT_HERSHEY_SIMPLEX, fs2, _BLACK, 1, cv2.LINE_AA)
+
+
+def _bbox(frame, bbox, color, state: str, measured: str):
+    """The fallback overlay: a plain rectangle, used when no outline exists."""
+    u = _ui_scale(frame)
+    x1, y1, x2, y2 = map(int, bbox)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color, max(2, int(2 * u)))
+    _caption_chip(frame, (x1, y1), color, state, measured)
+
+
+def _contour(frame, polygon, color):
+    """Rotoscoped outline of the animal, from the segmentation mask.
+
+    Honest in a way a box cannot be. A rectangle around a cat mid-stretch is
+    roughly half carpet, so it asserts "the pet is somewhere in here" and
+    invites the viewer to read the whole rectangle as the finding. The outline
+    asserts exactly what the detector decided was animal, which is both more
+    useful to look at and a smaller claim.
+
+    Drawn as a soft wide stroke under a crisp narrow one, so the edge reads
+    against both a dark sofa and a bright window without a drop shadow. The
+    interior wash is kept very light on purpose: at any strength you can
+    actually notice, a big silhouette turns into a solid colour block and you
+    lose the animal inside their own outline.
+    """
+    u = _ui_scale(frame)
+    x, y, w, h = cv2.boundingRect(polygon)
+    pad = int(6 * u)
+    x0, y0 = max(0, x - pad), max(0, y - pad)
+    x1, y1 = min(frame.shape[1], x + w + pad), min(frame.shape[0], y + h + pad)
+    if x1 <= x0 or y1 <= y0:
+        return
+
+    # Glow and the faint interior wash go on an overlay blended over the
+    # outline's own bounding box only — a full-frame blend per animal per frame
+    # is the kind of cost that turns a 30s clip into a two-minute render.
+    roi = frame[y0:y1, x0:x1]
+    shifted = polygon - np.array([[x0, y0]], dtype=polygon.dtype)
+    overlay = roi.copy()
+    cv2.fillPoly(overlay, [shifted], color)
+    cv2.polylines(overlay, [shifted], True, color, max(4, int(5 * u)), cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.14, roi, 0.86, 0, roi)
+
+    cv2.polylines(frame, [polygon], True, color, max(2, int(2 * u)), cv2.LINE_AA)
+
+
+# How much of the recent path stays on screen. Long enough to read the shape of
+# a movement, short enough that a pacing animal doesn't scribble over the frame.
+TRAIL_SECONDS = 2.5
+
+
+def _trail(frame, points, color):
+    """Where the animal has just been: a centroid path that fades out behind.
+
+    Built from the detections already computed, so it costs one polyline per
+    frame and no extra inference.
+
+    Age is carried by thickness and by a MILD brightness ramp, over a dark
+    casing. The first version faded the colour to 25% of the zone hue, which on
+    green is (12,51,12) — invisible against a sofa, a night-time room, or any
+    of the footage people actually upload. The casing is what makes it legible
+    on both a white rug and a black one; the taper is what says which end is
+    now.
+    """
+    if len(points) < 2:
+        return
+    u = _ui_scale(frame)
+    n = len(points)
+    for i in range(1, n):
+        age = i / (n - 1)                     # 0 oldest, 1 newest
+        thick = max(2, int((1.5 + 3.0 * age) * u))
+        cv2.line(frame, points[i - 1], points[i], _BLACK, thick + max(2, int(2 * u)),
+                 cv2.LINE_AA)
+    for i in range(1, n):
+        age = i / (n - 1)
+        fade = 0.55 + 0.45 * age
+        c = tuple(int(ch * fade) for ch in color)
+        thick = max(2, int((1.5 + 3.0 * age) * u))
+        cv2.line(frame, points[i - 1], points[i], c, thick, cv2.LINE_AA)
+    r = max(3, int(4 * u))
+    cv2.circle(frame, points[-1], r + max(1, int(u)), _BLACK, -1, cv2.LINE_AA)
+    cv2.circle(frame, points[-1], r, color, -1, cv2.LINE_AA)
 
 
 def _skeleton(frame, keypoints):
@@ -370,6 +463,11 @@ def annotate_video(video_path: str, pose_frames: list, analysis: dict) -> Option
     d_track     = _build_distress_track(event_lut, total, default_d)
     pose_track  = _build_pose_track(pose_frames, total, carry_secs=0.8, fps=fps)
 
+    # Centroid history for the fading trail, capped at TRAIL_SECONDS of
+    # detections (the pose track is sampled at 5 fps, not at frame rate).
+    trail = deque(maxlen=max(2, int(TRAIL_SECONDS * 5)))
+    last_sample_idx = -1
+
     cur_event_text = ""
     cur_pov_text   = ""
     cur_zone       = default_z
@@ -406,9 +504,36 @@ def annotate_video(video_path: str, pose_frames: list, analysis: dict) -> Option
             # ── Pose overlay ─────────────────────────────────────────────────
             pf = pose_track.get(frame_idx)
             if pf:
+                # One trail, for the largest animal in shot — with two pets the
+                # paths cross and two ribbons read as one scribble. Sampled from
+                # the carried track, so it advances at the detection rate rather
+                # than jittering at frame rate.
+                biggest = max(pf.animals, key=_box_area, default=None)
+                if biggest is not None and pf.frame_idx != last_sample_idx:
+                    last_sample_idx = pf.frame_idx
+                    trail.append(_centroid(biggest.bbox))
+                if len(trail) > 1:
+                    _trail(frame, list(trail), color)
+
                 for animal in pf.animals:
-                    _bbox(frame, animal.bbox, color, cur_state,
-                          f"{subject} detected {animal.confidence:.0%}")
+                    # Outline every animal, caption only the primary one. Two
+                    # pets in shot produced two chips on top of each other,
+                    # both saying the same thing — the state phrase describes
+                    # the scene, not one individual.
+                    captioned = animal is biggest
+                    measured_line = (f"{subject} detected {animal.confidence:.0%}"
+                                     if captioned else "")
+                    if animal.polygon is not None:
+                        _contour(frame, animal.polygon, color)
+                        if captioned:
+                            px, py, _, _ = cv2.boundingRect(animal.polygon)
+                            _caption_chip(frame, (px, py), color, cur_state, measured_line)
+                    elif captioned:
+                        _bbox(frame, animal.bbox, color, cur_state, measured_line)
+                    else:
+                        x1, y1, x2, y2 = map(int, animal.bbox)
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), color,
+                                      max(2, int(2 * _ui_scale(frame))))
                     _skeleton(frame, animal.keypoints)
                     if animal.spinal_angle is not None:
                         spine_window.append(animal.spinal_angle)
@@ -608,8 +733,14 @@ def annotate_image(image_path: str, pose_frames: list, analysis: dict) -> Option
 
     if pose_frames and pose_frames[0].animals:
         for animal in pose_frames[0].animals:
-            _bbox(frame, animal.bbox, color, state,
-                  f"{subject} detected {animal.confidence:.0%}")
+            # No trail on a still: one frame has no path to draw.
+            measured_line = f"{subject} detected {animal.confidence:.0%}"
+            if animal.polygon is not None:
+                _contour(frame, animal.polygon, color)
+                px, py, _, _ = cv2.boundingRect(animal.polygon)
+                _caption_chip(frame, (px, py), color, state, measured_line)
+            else:
+                _bbox(frame, animal.bbox, color, state, measured_line)
             _skeleton(frame, animal.keypoints)
             if animal.spinal_angle is not None:
                 _spinal_readout(frame, animal.spinal_angle)

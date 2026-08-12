@@ -92,6 +92,10 @@ class AnimalPose:
     keypoints: Optional[np.ndarray]  # shape (17, 3): x, y, conf
     spinal_angle: Optional[float] = None
     head_tilt: Optional[float] = None
+    # Outline of the animal in image coordinates, (N, 2). Present only when a
+    # segmentation model is loaded. Unlike the box this contains the animal and
+    # nothing else, so it is both the honest overlay and a much tighter ROI.
+    polygon: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -154,6 +158,7 @@ class YoloPoseService:
     def __init__(self):
         self._detect_model = None
         self._pose_model = None
+        self._segmenting = False
         self._available = False
         self._load_models()
 
@@ -161,13 +166,18 @@ class YoloPoseService:
         try:
             from ultralytics import YOLO
             self._detect_model = YOLO(DETECT_MODEL)
+            # A -seg checkpoint gives masks as well as boxes, from one model
+            # and one pass. Nothing else needs configuring: the overlay draws
+            # the outline when it is there and the box when it is not.
+            self._segmenting = getattr(self._detect_model, "task", "") == "segment"
             if ENABLE_POSE:
                 self._pose_model = YOLO(POSE_MODEL)
                 print(f"  ✓ YOLO loaded: {DETECT_MODEL} (detect) + {POSE_MODEL} (pose)")
                 print("    ⚠ Pose enabled — verify the weights are ANIMAL-trained; "
                       "human COCO-17 keypoints produce confident nonsense on pets")
             else:
-                print(f"  ✓ YOLO loaded: {DETECT_MODEL} (detect); pose disabled "
+                mode = "detect+segment" if self._segmenting else "detect"
+                print(f"  ✓ YOLO loaded: {DETECT_MODEL} ({mode}); pose disabled "
                       f"(no animal-trained model — set ENABLE_POSE=1 to override)")
             self._available = True
         except Exception as e:
@@ -176,6 +186,11 @@ class YoloPoseService:
     @property
     def available(self) -> bool:
         return self._available
+
+    @property
+    def segmenting(self) -> bool:
+        """True when the loaded detector also produces outlines."""
+        return self._segmenting
 
     def process_video(self, video_path: str, sample_fps: float = 5.0) -> list:
         """
@@ -226,9 +241,21 @@ class YoloPoseService:
     def _process_frame(self, frame: np.ndarray, frame_idx: int, timestamp: float) -> PoseFrame:
         pose_frame = PoseFrame(frame_idx=frame_idx, timestamp_sec=timestamp)
         try:
-            det_results = self._detect_model(frame, classes=[15, 16], verbose=False)
+            # ANIMAL_CLASSES is the single source of truth for what counts as
+            # the subject; the filter used to repeat [15, 16] separately, so
+            # the two could drift apart silently.
+            det_results = self._detect_model(frame, classes=list(ANIMAL_CLASSES),
+                                             verbose=False)
             if not det_results or not len(det_results[0].boxes):
                 return pose_frame
+
+            # Segmentation models return one polygon per detection, in the same
+            # order as the boxes. Absent on a detect-only model, in which case
+            # everything downstream falls back to the box.
+            polys = None
+            masks = getattr(det_results[0], "masks", None)
+            if masks is not None and getattr(masks, "xy", None) is not None:
+                polys = list(masks.xy)
 
             pose_boxes = None
             pose_kps = None
@@ -239,7 +266,7 @@ class YoloPoseService:
                 if pose_results[0].keypoints is not None:
                     pose_kps = pose_results[0].keypoints.data.cpu().numpy()
 
-            for det_box in det_results[0].boxes:
+            for det_i, det_box in enumerate(det_results[0].boxes):
                 cls_id = int(det_box.cls[0])
                 if cls_id not in ANIMAL_CLASSES:
                     continue
@@ -258,6 +285,14 @@ class YoloPoseService:
                     if best_idx >= 0 and best_iou > 0.1:
                         keypoints = pose_kps[best_idx]
 
+                polygon = None
+                if polys is not None and det_i < len(polys):
+                    p = polys[det_i]
+                    # A three-point "outline" is a rendering artefact, not a
+                    # silhouette; fall back to the box rather than draw it.
+                    if p is not None and len(p) >= 8:
+                        polygon = np.asarray(p, dtype=np.int32)
+
                 pose_frame.animals.append(AnimalPose(
                     bbox=bbox,
                     confidence=conf,
@@ -266,6 +301,7 @@ class YoloPoseService:
                     keypoints=keypoints,
                     spinal_angle=self._spinal_angle(keypoints),
                     head_tilt=self._head_tilt(keypoints),
+                    polygon=polygon,
                 ))
         except Exception as e:
             print(f"    ⚠ Frame {frame_idx} pose error: {e}")
