@@ -388,12 +388,19 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
   const videoRef = useRef(null);
   const speechSynthRef = useRef(null);
 
-  // Photos are analysed as a single moment: no playback, no subtitles to sync.
-  // Fall back to the timeline length when the caller didn't say — a one-entry
-  // timeline is how the prompt represents a still.
-  const isStill = mediaType
-    ? mediaType === 'image'
-    : (analysisData?.timeline?.length === 1 && !analysisData?._audio_metrics?.audio_present);
+  // Photos are analysed as a single moment: no playback, no track to scrub, no
+  // audio, no sequence. Half this screen is built around a clip, and showing
+  // that machinery over a still is what makes a photo analysis look like it
+  // was treated as a video.
+  //
+  // The pipeline stamps _media_kind, so trust that first; mediaType covers
+  // stored records, and the timeline-length check catches anything logged
+  // before the stamp existed.
+  const isStill = analysisData?._media_kind
+    ? analysisData._media_kind === 'image'
+    : mediaType
+      ? mediaType === 'image'
+      : (analysisData?.timeline?.length === 1 && !analysisData?._audio_metrics?.audio_present);
 
   // Text-to-speech
   const speak = useCallback((text) => {
@@ -468,6 +475,12 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
   if (!analysisData) return <div className="min-h-screen flex items-center justify-center"><p className="text-white/60">No analysis data</p></div>;
 
   const { overall_assessment, visual_analysis, audio_analysis, timeline, interpret_lines, advisory, species, breed_detected, breed_confidence, video_context, video_type } = analysisData;
+  // A still's single POV line, shown as a fixed caption under the photo since
+  // there's no playhead to reveal it against.
+  const stillCaption = isStill && interpret_lines?.length
+    ? getPetPovText(interpret_lines[0])
+    : null;
+
   // v17 measured layers — present only when the relevant oracle ran.
   const captureQuality = analysisData.capture_quality;
   const healthSignals = analysisData._health_signals;
@@ -751,7 +764,10 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
               
               {/* Enhanced subtitle - black bg, colored border, 30% bigger */}
               <AnimatePresence mode="wait">
-                {subtitlesEnabled && currentSubtitle && (
+                {/* Timed captions belong to playback. On a still they'd sit
+                    permanently over the animal's face, duplicating the fixed
+                    caption below it. */}
+                {!isStill && subtitlesEnabled && currentSubtitle && (
                   <motion.div 
                     key={currentSubtitle.key}
                     initial={{ opacity: 0, y: 10 }}
@@ -773,7 +789,10 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
               </AnimatePresence>
             </div>
             
-            {/* Subtitle toggle - slider on left */}
+            {/* Subtitle toggle - slider on left. Playback chrome: a still has
+                nothing to sync captions to, so its one POV line is rendered
+                as a fixed caption below instead. */}
+            {!isStill ? (
             <div className="p-4 flex items-center justify-between border-t border-white/10">
               <div className="flex items-center gap-3">
                 {/* Slider Toggle - fixed overflow */}
@@ -802,6 +821,14 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
                 {audioEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
               </button>
             </div>
+            ) : stillCaption ? (
+              <div className="p-4 border-t border-white/10">
+                <p className="font-roboto text-white/90 text-sm italic text-center">"{stillCaption}"</p>
+                <p className="font-roboto text-white/40 text-xs text-center mt-1">
+                  What they're likely experiencing in this moment
+                </p>
+              </div>
+            ) : null}
           </motion.div>
         )}
 
@@ -865,7 +892,10 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
           </div>
         </motion.div>
 
-        {/* Visual Timeline */}
+        {/* Visual Timeline — a clip only. A photo is one moment: there is no
+            curve to plot and nothing to jump to, and drawing a chart through a
+            single point would imply a sequence that was never observed. */}
+        {!isStill && (
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="glass-card rounded-2xl p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-roboto font-bold text-xl text-white flex items-center gap-2"><Eye className="w-5 h-5 text-white/70" />Visual Analysis</h2>
@@ -892,6 +922,7 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
             ))}
           </div>
         </motion.div>
+        )}
 
         {/* Behavioral Markers - Only verified observations */}
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="glass-card rounded-2xl p-6">
@@ -918,7 +949,9 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
           )}
         </motion.div>
 
-        {/* Audio */}
+        {/* Audio — videos only. A photo carries no audio track, so an empty
+            waveform would be inventing an absence of evidence as evidence. */}
+        {!isStill && (
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }} className="glass-card rounded-2xl overflow-hidden">
           <button onClick={() => toggleSection('audio')} className="w-full p-6 flex items-center justify-between hover:bg-white/5">
             <h2 className="font-roboto font-bold text-xl text-white flex items-center gap-2"><Volume2 className="w-5 h-5 text-white/70" />Audio Analysis</h2>
@@ -926,6 +959,7 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
           </button>
           {expandedSections.audio && <div className="px-6 pb-6"><AudioWaveform events={audio_analysis?.vocalizations_detected || []} environmentalSounds={audio_analysis?.environmental_sounds || []} duration={duration || 17} currentTime={currentTime} isPlaying={isPlaying} onSeek={handleMarkerClick} videoContext={video_context} /></div>}
         </motion.div>
+        )}
 
         {/* Pet's Perspective - Umwelt-based ethological translation */}
         {interpret_lines?.length > 0 && (
@@ -936,7 +970,7 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
             </button>
             {expandedSections.interpret && (
               <div className="px-6 pb-6">
-                <p className="text-white/50 text-xs mb-4 italic">What your pet likely perceives — based on the specific context of this video</p>
+                <p className="text-white/50 text-xs mb-4 italic">What your pet likely perceives — based on the specific context of this {isStill ? 'photo' : 'video'}</p>
                 <div className="space-y-3">
                   {interpret_lines.map((line, i) => {
                     const petPovText = getPetPovText(line);
@@ -948,7 +982,7 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
                         style={{ backgroundColor: 'rgba(0,0,0,0.3)', borderLeft: `4px solid ${c}` }}
                         onClick={() => { const p = (line.timestamp||'0:00').split(':').map(Number); handleMarkerClick(p.length===2 ? p[0]*60+p[1] : parseFloat(line.timestamp)||0); }}>
                         <div className="flex items-start gap-3">
-                          <span className="text-white/50 text-xs font-mono min-w-[40px]">{line.timestamp}</span>
+                          {!isStill && <span className="text-white/50 text-xs font-mono min-w-[40px]">{line.timestamp}</span>}
                           <div className="flex-1">
                             <p className="text-white font-medium italic">"{petPovText}"</p>
                             {line.trigger && <p className="text-white/40 text-xs mt-1">Trigger: {line.trigger}</p>}

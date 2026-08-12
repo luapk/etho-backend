@@ -44,7 +44,7 @@ Research foundations:
 
 # Bump when the prompt or output schema changes — logged with every stored
 # analysis so longitudinal records remain comparable across versions.
-PROMPT_VERSION = "6.2"
+PROMPT_VERSION = "6.3"
 
 ETHOLOGICAL_SYSTEM_PROMPT = """
 # ETHOLOGICAL AI ARCHITECT v6.0 — POSE-GROUNDED DEEP CONTEXTUAL ANALYSIS

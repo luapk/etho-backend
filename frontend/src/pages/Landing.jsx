@@ -23,11 +23,22 @@ const MAX_RECORD_DURATION = 45;
 const MAX_BATCH = 30;
 const POLL_MS = 3000;
 
-const ANALYSIS_STEPS = [
+/* What we tell the guardian is happening. A photo has no audio track and no
+   sequence, so promising to listen to it is a small lie that makes the whole
+   analysis look like it wasn't paying attention to what was uploaded. */
+const VIDEO_STEPS = [
   { id: 'upload', label: 'Uploading', icon: Upload },
   { id: 'detect', label: 'Finding your pet', icon: Eye },
   { id: 'visual', label: 'Reading body language', icon: Eye },
   { id: 'audio', label: 'Listening to sounds', icon: Volume2 },
+  { id: 'synthesis', label: 'Putting it together', icon: Brain },
+  { id: 'complete', label: 'Done', icon: CheckCircle },
+];
+
+const PHOTO_STEPS = [
+  { id: 'upload', label: 'Uploading', icon: Upload },
+  { id: 'detect', label: 'Finding your pet', icon: Eye },
+  { id: 'visual', label: 'Reading their face and posture', icon: Eye },
   { id: 'synthesis', label: 'Putting it together', icon: Brain },
   { id: 'complete', label: 'Done', icon: CheckCircle },
 ];
@@ -48,6 +59,7 @@ function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline }) {
   const [error, setError] = useState(null);
   const [asleep, setAsleep] = useState(false);
   const [batch, setBatch] = useState(null);
+  const [steps, setSteps] = useState(VIDEO_STEPS);
 
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
@@ -102,22 +114,24 @@ function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline }) {
     }
   };
 
-  const simulateSteps = () => {
+  const simulateSteps = (list) => {
     let step = 0;
     const interval = setInterval(() => {
       step += 1;
-      if (step < ANALYSIS_STEPS.length - 1) setCurrentStep(step);
+      if (step < list.length - 1) setCurrentStep(step);
       else clearInterval(interval);
     }, 1500);
     return interval;
   };
 
   const analyseOne = async (file) => {
+    const list = isImage(file) ? PHOTO_STEPS : VIDEO_STEPS;
+    setSteps(list);
     setError(null);
     setIsUploading(true);
     setUploadProgress(0);
     setCurrentStep(0);
-    const stepInterval = simulateSteps();
+    const stepInterval = simulateSteps(list);
     try {
       const data = await uploadMedia(file, {
         petId: pet?.id,
@@ -125,7 +139,7 @@ function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline }) {
         onProgress: (p) => { setUploadProgress(p); if (p === 100) setCurrentStep(1); },
       });
       clearInterval(stepInterval);
-      setCurrentStep(ANALYSIS_STEPS.length - 1);
+      setCurrentStep(list.length - 1);
 
       if (data.data?.error && data.data?.error_type === 'no_pet_detected') {
         setError(data.data.message || "We couldn't find a pet in that one.");
@@ -437,7 +451,7 @@ function Landing({ onAnalysisComplete, petId, onChangePet, onViewTimeline }) {
                 </p>
               </div>
               <div className="space-y-3">
-                {ANALYSIS_STEPS.map((step, idx) => {
+                {steps.map((step, idx) => {
                   const Icon = step.icon;
                   const active = idx === currentStep;
                   const done = idx < currentStep;

@@ -83,7 +83,15 @@ t = pet_store.compute_trends(pid)
 b = t["baseline"]
 check("baseline from first 4 (mean 32)", b["mean"] == 32.0, b)
 check("latest deviation positive & flagged", b["latest_deviation_sigma"] > 1.5 and b["flag"], b)
-check("slope worsening", t["slope"]["direction"] == "worsening", t["slope"])
+check("slope rising (neutral wording, never 'worsening')",
+      t["slope"]["direction"] == "rising", t["slope"])
+check("slope reports total change", t["slope"]["total_change"] > 0, t["slope"])
+check("rise exceeds this pet's own variation", t["slope"]["exceeds_variation"], t["slope"])
+# Scores end in the moderate band, so the guardian-facing reading should say
+# so plainly — and must never use the alarming word.
+check("reading flags the rise", t["reading"]["headline"] == "Trending up", t["reading"])
+check("reading never says worsening",
+      "worsen" not in (t["reading"]["headline"] + t["reading"]["detail"]).lower())
 check("fgs threshold flags (4 and 5 >= 4)", sum(1 for f in t["red_flags"] if f["type"] == "fgs_threshold") == 2)
 check("urgency flag present", any(f["type"] == "urgency" for f in t["red_flags"]))
 
@@ -95,7 +103,8 @@ check("markers aggregated", rep["recurring_markers"][0]["records"] == 4, rep["re
 md = vet_report.render_markdown(rep)
 for token in ["# Pre-Consultation", "Miso", "Signalment", "Observation Log",
               "Methodology & Limitations", "NOT a diagnosis", "Eating less",
-              "fgs_threshold", "worsening", "gemini-2.0-flash"]:
+              "fgs_threshold", "rising", "exceeds this pet's own SD",
+              "gemini-2.0-flash"]:
     check(f"markdown contains '{token[:25]}'", token in md)
 
 # ── 5. Endpoints via TestClient ──
@@ -110,7 +119,9 @@ check("PATCH pet", r.json()["pet"]["weight_kg"] == 28.5)
 r = client.get(f"/api/pets/{pid}/history")
 check("GET history", len(r.json()["history"]) == 5)
 r = client.get(f"/api/pets/{pid}/trends")
-check("GET trends", r.json()["trends"]["slope"]["direction"] == "worsening")
+check("GET trends", r.json()["trends"]["slope"]["direction"] == "rising")
+check("GET trends carries a guardian reading",
+      r.json()["trends"]["reading"]["tone"] in ("calm", "watch", "attention"))
 r = client.get(f"/api/pets/{pid}/vet-report?reason=checkup&format=markdown")
 check("GET vet-report markdown", r.status_code == 200 and "Pre-Consultation" in r.text
       and r.headers["content-type"].startswith("text/markdown"))

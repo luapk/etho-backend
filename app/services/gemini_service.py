@@ -76,12 +76,20 @@ def upload_video_to_gemini(video_path: str):
     return video_file
 
 
-def run_scene_verification(video_file) -> dict:
+def run_scene_verification(video_file, media_kind: str = "video") -> dict:
     """
-    PASS 1: Scene verification - What is ACTUALLY in this video?
+    PASS 1: Scene verification - What is ACTUALLY in this media?
     This prevents hallucinations by establishing ground truth first.
+
+    The wording is media-specific, and that matters more here than anywhere
+    else in the pipeline. Pass 2 treats this object as a hard constraint it
+    cannot contradict, so a question that presumes duration ("what sounds can
+    you hear", "what does the animal DO") aimed at a photograph doesn't just
+    produce one bad field — it mints a fabricated ground truth that the whole
+    analysis is then obliged to honour. Asking a still only what a still can
+    answer is what keeps the lock trustworthy.
     """
-    print(f"  → Pass 1: Scene verification...")
+    print(f"  → Pass 1: Scene verification ({media_kind})...")
     
     model = genai.GenerativeModel(
         model_name=GEMINI_MODEL,
@@ -93,7 +101,40 @@ def run_scene_verification(video_file) -> dict:
         }
     )
     
-    scene_prompt = """
+    if media_kind == "image":
+        scene_prompt = """
+SCENE VERIFICATION - This is a SINGLE PHOTOGRAPH. Answer ONLY what is visible
+in this one frame. Do NOT infer, assume, or imagine anything that isn't
+clearly visible, and do NOT describe motion or sound: a photograph contains
+neither. If you cannot tell whether the animal was moving, that is the correct
+answer.
+
+Respond with JSON:
+{
+    "animals_visible": [
+        {"type": "cat/dog/bird/rodent/etc", "description": "brief physical description", "count": 1}
+    ],
+    "other_animals_present": [
+        {"type": "animal type", "description": "what kind", "location": "where in frame"}
+    ],
+    "humans_visible": true/false,
+    "setting": "indoor/outdoor and specific location type you can SEE",
+    "objects_visible": ["list only objects you can CLEARLY see"],
+    "visible_posture": ["the main animal's POSTURE and POSITION as frozen here — e.g. 'lying on left side', 'ears flattened back', 'tail tucked under body'. Positions, not actions."],
+    "framing": "close-up of face / head and shoulders / whole body / partial — and whether the face is visible",
+    "scene_summary": "2 sentences describing ONLY what you can verify seeing in this frame"
+}
+
+CRITICAL:
+- NO verbs of motion. Not 'walking', 'wagging', 'approaching', 'trembling'.
+  Describe the pose, not what produced it.
+- NO sounds. There is no audio in a photograph.
+- NO sequence. There is no before or after in a photograph.
+- List ALL animals you can see, not just the main pet
+- Be extremely literal and factual
+"""
+    else:
+        scene_prompt = """
 SCENE VERIFICATION - Answer ONLY what you can directly observe in this video.
 Do NOT infer, assume, or imagine anything that isn't clearly visible.
 
@@ -218,12 +259,41 @@ def _build_resp_section(respiration: dict) -> str:
 
 _IMAGE_MODE_ADDENDUM = """
 ## IMAGE MODE
-This submission is a SINGLE STILL IMAGE, not a video. Adapt accordingly:
+This submission is a SINGLE STILL IMAGE, not a video. A still supports a
+different — and in one respect stronger — kind of claim than a clip, so adapt
+rather than producing a thinner video analysis.
+
+STRUCTURE
 - timeline: exactly one entry at timestamp "0:00" describing the captured moment
 - interpret_lines: at most one entry at "0:00"
 - audio_analysis: empty lists, solicitation_purr_detected false (no audio exists)
-- Do NOT invent motion, sequence, or sounds — score only the visible moment
-- instrument_scores: score from this single frame (the FGS is validated on stills)
+- video_type: "single_image"
+
+WHAT YOU CANNOT SEE IN A STILL
+A frozen frame carries no duration, so anything defined by change over time is
+unobservable here. Do NOT report, and do NOT let it influence the score:
+- movement of any kind — pacing, tail wagging, trembling, approaching, fleeing,
+  circling, shifting weight
+- tail-wag lateralisation (Quaranta 2007 requires wag direction over time)
+- vocalizations, purring, panting sounds, breathing rate
+- sequences, escalation, settling, or "then"/"before"/"after" narration
+- repetition or frequency of any behaviour
+
+A posture can be described as it appears ("weight shifted onto the hind legs",
+"tail held low") — that is visible. What it was doing a second earlier is not.
+
+WHAT A STILL SUPPORTS WELL
+Facial action units, body posture, ear and tail POSITION, pupil and eye
+aperture, muscle tension, and piloerection are all readable from one frame.
+The Feline Grimace Scale in particular was VALIDATED on still images, so for a
+cat this is the instrument's intended input, not a compromise — score it
+carefully and say so in the confidence reasoning.
+
+CONFIDENCE
+State plainly that this is a single moment. A calm frame does not establish a
+calm animal, and a tense frame does not establish sustained distress; one
+photo is one sample of a behaviour that varies. Reflect that in `confidence`
+rather than hedging the observations themselves.
 """
 
 
@@ -546,6 +616,39 @@ def validate_and_enrich_response(result: dict, scene_context: dict) -> dict:
     return result
 
 
+def enforce_image_mode(result: dict) -> dict:
+    """Hold a still-image analysis to what a still can actually support.
+
+    The prompt asks for this, but asking isn't enough — the same reason
+    instrument totals are recomputed rather than trusted. A model handed a
+    photo will sometimes still emit a multi-entry timeline or a vocalization,
+    and once that reaches the record it is indistinguishable from an observed
+    one: a timeline implies a sequence nobody watched, and a "detected" bark
+    implies audio that does not exist in a JPEG.
+
+    So the structure is clamped here. What the model saw in the frame is kept
+    in full; only claims that require duration or sound are removed.
+    """
+    audio = result.get("audio_analysis")
+    if isinstance(audio, dict):
+        audio["vocalizations_detected"] = []
+        audio["environmental_sounds"] = []
+        audio["solicitation_purr_detected"] = False
+        audio["not_applicable"] = "Single image — no audio track exists."
+
+    # One frame is one moment. Extra entries would be invented sequence.
+    for key in ("timeline", "interpret_lines"):
+        entries = result.get(key)
+        if isinstance(entries, list) and entries:
+            first = entries[0]
+            if isinstance(first, dict):
+                first["timestamp"] = "0:00"
+            result[key] = [first]
+
+    result["video_type"] = "single_image"
+    return result
+
+
 def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = None,
                   audio_metrics: dict = None, media_kind: str = "video",
                   respiration: dict = None) -> dict:
@@ -578,7 +681,7 @@ def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = 
         
         # Step 2: Scene verification (PASS 1)
         print("\nStep 2/3: Verifying scene content...")
-        scene_context = run_scene_verification(video_file)
+        scene_context = run_scene_verification(video_file, media_kind)
         
         # Log what we found
         print(f"  → Animals found: {scene_context.get('animals_visible', [])}")
@@ -613,7 +716,9 @@ def analyze_video(video_path: str, use_cache: bool = True, pose_metrics: dict = 
         
         # Validate and enrich with scene context
         result = validate_and_enrich_response(result, scene_context)
-        
+        if media_kind == "image":
+            result = enforce_image_mode(result)
+
         # Add metadata
         result["_model_used"] = GEMINI_MODEL
         result["_from_cache"] = False

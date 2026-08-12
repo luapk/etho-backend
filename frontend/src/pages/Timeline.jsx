@@ -21,6 +21,15 @@ const ZONE = {
   red:    { label: 'Elevated', color: '#ef4444', text: 'text-red-300' },
 };
 
+/* Reading tone → colour. Deliberately restrained: "watch" is amber, not red,
+   and "calm" is never coloured at all. Colour is how a screen raises its
+   voice, so it's reserved for readings that have earned it. */
+const TONE = {
+  calm:      { text: 'text-white',      icon: 'text-white/70' },
+  watch:     { text: 'text-amber-200',  icon: 'text-amber-300' },
+  attention: { text: 'text-red-200',    icon: 'text-red-300' },
+};
+
 const zoneOf = (s) => (s == null ? 'yellow' : s <= 33 ? 'green' : s <= 66 ? 'yellow' : 'red');
 const fmtDate = (iso) =>
   new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
@@ -195,6 +204,7 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
   const latest = trends?.latest;
   const baseline = trends?.baseline;
   const slope = trends?.slope;
+  const reading = trends?.reading;
   const flags = trends?.red_flags || [];
 
   return (
@@ -229,6 +239,19 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
           </div>
         ) : (
           <>
+            {/* The one-sentence answer to "is my pet okay?", before any number */}
+            {reading?.detail && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+                className="glass-card rounded-2xl p-5"
+              >
+                <p className={`font-roboto font-black text-xl ${TONE[reading.tone]?.text || 'text-white'}`}>
+                  {reading.headline}
+                </p>
+                <p className="font-roboto text-white/75 text-sm mt-1">{reading.detail}</p>
+              </motion.div>
+            )}
+
             {/* How they are now */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
               <Tile
@@ -242,10 +265,17 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
               <Tile
                 label="Their normal"
                 sub={
+                  /* A 2 SD jump inside the green band is statistically real and
+                     clinically unremarkable. Saying "well above normal" without
+                     that context is the same scare the trend wording had. */
                   baseline
-                    ? baseline.flag
-                      ? `Latest is ${baseline.latest_deviation_sigma > 0 ? 'well above' : 'well below'} normal`
-                      : 'Latest is within their usual range'
+                    ? !baseline.flag
+                      ? 'Latest is within their usual range'
+                      : baseline.latest_deviation_sigma < 0
+                        ? 'Calmer than their usual'
+                        : latest?.zone === 'green'
+                          ? 'Above their usual — still in the calm range'
+                          : 'Well above their usual'
                     : `Needs ${Math.max(0, 3 - analyses.length)} more observation(s)`
                 }
               >
@@ -257,6 +287,10 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                 ) : '—'}
               </Tile>
 
+              {/* The headline comes from the backend reading, which weighs
+                  WHERE the scores sit before it weighs which way they lean —
+                  a rising line inside the calm band is not bad news. The raw
+                  gradient stays underneath for anyone who wants it. */}
               <Tile
                 label="Direction"
                 sub={
@@ -265,14 +299,14 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                     : 'Needs 4+ observations'
                 }
               >
-                {slope ? (
-                  <span className="flex items-center gap-2 capitalize text-xl">
-                    {slope.direction === 'worsening' && <TrendingUp className="w-6 h-6 text-red-300" />}
-                    {slope.direction === 'improving' && <TrendingDown className="w-6 h-6 text-green-300" />}
-                    {slope.direction === 'stable' && <Minus className="w-6 h-6 text-white/70" />}
-                    {slope.direction}
-                  </span>
-                ) : '—'}
+                <span className={`flex items-center gap-2 text-xl ${TONE[reading?.tone]?.text || ''}`}>
+                  {slope && (slope.direction === 'rising'
+                    ? <TrendingUp className={`w-6 h-6 ${TONE[reading?.tone]?.icon || 'text-white/70'}`} />
+                    : slope.direction === 'easing'
+                      ? <TrendingDown className="w-6 h-6 text-green-300" />
+                      : <Minus className="w-6 h-6 text-white/70" />)}
+                  {reading?.headline || '—'}
+                </span>
               </Tile>
 
               <Tile

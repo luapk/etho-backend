@@ -255,8 +255,16 @@ def render_markdown(report: dict) -> str:
         add("- Baseline: not yet established (needs >= 3 observations).")
     if t.get("slope"):
         sl = t["slope"]
+        # Reported as a measured gradient, not as a prognosis: whether a
+        # +2 pts/week drift inside the calm band means anything clinically is
+        # the clinician's call, so the row states the number, the span, and
+        # whether it exceeds this animal's own variability.
+        exceeds = ("exceeds this pet's own SD" if sl.get("exceeds_variation")
+                   else "within this pet's own SD — not distinguishable from "
+                        "normal variation")
         add(f"- **Trend**: {sl['direction']} — {sl['points_per_week']:+.2f} "
-            f"points/week over {sl['span_weeks']} weeks (n={sl['n']}).")
+            f"points/week over {sl['span_weeks']} weeks (n={sl['n']}); "
+            f"total change {sl['total_change']:+.1f} points, {exceeds}.")
     else:
         add("- Trend slope: not yet computable (needs >= 4 observations).")
     add("")

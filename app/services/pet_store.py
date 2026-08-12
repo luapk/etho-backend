@@ -542,6 +542,116 @@ def get_timeline_feed(pet_id: str, limit: int = 200) -> list:
 
 # ── Trends & baseline ────────────────────────────────────────────────────────
 
+ZONE_CALM_MAX = 33      # top of the green band
+ZONE_MODERATE_MAX = 66  # top of the yellow band
+
+
+def _trend_reading(all_scores: list, slope: dict = None) -> dict:
+    """Turn the trend maths into something safe to show a guardian.
+
+    Two things go wrong if you hand a raw slope straight to a pet parent.
+
+    First, the word. "Worsening" is frightening, and it is an interpretation —
+    the same thing this codebase refuses to do everywhere else. A rising
+    least-squares fit is a number, not a prognosis.
+
+    Second, and worse, the context. A pet whose every observation sits in the
+    calm band can still produce a positive slope from ordinary variation, and
+    telling their guardian their pet is "worsening" while nothing has ever left
+    the green zone is alarming them over noise. Where the scores actually SIT
+    matters more than which way the line leans.
+
+    So a reading is only allowed to sound concerned when the scores themselves
+    warrant it, and a trend is only called a trend when it is larger than the
+    pet's own variability. The number is never hidden — the chart and the
+    slope stay on screen — this decides the words wrapped around them.
+
+    tone is one of: calm | watch | attention.
+    """
+    if not all_scores:
+        return {"headline": "No observations yet", "detail": "", "tone": "calm"}
+
+    recent = all_scores[-3:]
+    worst_recent = max(recent)
+    ever_left_calm = max(all_scores) > ZONE_CALM_MAX
+    n = len(all_scores)
+
+    # Not enough points for a defensible trend. Say that plainly rather than
+    # drawing a line through three dots.
+    if not slope:
+        if worst_recent > ZONE_MODERATE_MAX:
+            detail = "A recent observation is in the elevated range."
+            if n < 4:
+                detail += (f" {4 - n} more observation{'s' if 4 - n != 1 else ''} "
+                           f"will let Etho compare it to their normal.")
+            return {"headline": "Elevated right now", "detail": detail,
+                    "tone": "attention"}
+        return {
+            "headline": "Building their picture",
+            "detail": (f"{n} observation{'s' if n != 1 else ''} so far. "
+                       f"After four, Etho can describe how they're trending."),
+            "tone": "calm",
+        }
+
+    real = slope["exceeds_variation"]
+    rising = slope["points_per_week"] > 0 and real
+    easing = slope["points_per_week"] < 0 and real
+    # "6 weeks", not "6.0 weeks" — a decimal point in a reassuring sentence
+    # reads as precision the sentence isn't claiming.
+    span = slope["span_weeks"]
+    weeks = int(span) if float(span).is_integer() else span
+    change = abs(round(slope["total_change"]))
+
+    # Everything, always, inside the calm band.
+    if not ever_left_calm:
+        if rising:
+            return {
+                "headline": "Calm, drifting up",
+                "detail": (f"Up about {change} points over {weeks} weeks — but every "
+                           f"observation is still in their calm range. Worth watching, "
+                           f"not worrying about."),
+                "tone": "calm",
+            }
+        return {
+            "headline": "Settled",
+            "detail": (f"All {n} observations over {weeks} weeks sit in their calm "
+                       f"range."),
+            "tone": "calm",
+        }
+
+    # Recent observations in the moderate band.
+    if worst_recent <= ZONE_MODERATE_MAX:
+        if rising:
+            return {
+                "headline": "Trending up",
+                "detail": (f"Up about {change} points over {weeks} weeks, into their "
+                           f"moderate range. Worth mentioning at their next visit."),
+                "tone": "watch",
+            }
+        if easing:
+            return {
+                "headline": "Easing",
+                "detail": f"Down about {change} points over {weeks} weeks.",
+                "tone": "calm",
+            }
+        return {
+            "headline": "Steady",
+            "detail": (f"Holding around their usual level across {n} observations. "
+                       f"Some readings are in the moderate range."),
+            "tone": "watch",
+        }
+
+    # Recent observations in the elevated band — say so regardless of slope.
+    detail = "A recent observation is in the elevated range."
+    if rising:
+        detail = (f"Up about {change} points over {weeks} weeks, and recent "
+                  f"observations are in the elevated range.")
+    elif easing:
+        detail = (f"Coming down — about {change} points over {weeks} weeks — though "
+                  f"recent observations are still in the elevated range.")
+    return {"headline": "Elevated", "detail": detail, "tone": "attention"}
+
+
 def compute_trends(pet_id: str) -> dict:
     """Transparent, simple statistics over a pet's history. Each pet serves as
     its own control (intra-subject comparison) — absolute scores across pets
@@ -553,7 +663,8 @@ def compute_trends(pet_id: str) -> dict:
     """
     history = get_history(pet_id)
     n = len(history)
-    out = {"observation_count": n, "baseline": None, "latest": None, "slope": None}
+    out = {"observation_count": n, "baseline": None, "latest": None, "slope": None,
+           "reading": _trend_reading([])}
     if n == 0:
         return out
 
@@ -593,13 +704,27 @@ def compute_trends(pet_id: str) -> dict:
         denom = sum((x - mx) ** 2 for x in xs)
         if denom > 0:
             slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / denom
+            span = xs[-1]
+            total_change = slope * span
+            # A slope only means something measured against how much this pet
+            # varies anyway. Drift smaller than one SD of their own history is
+            # indistinguishable from ordinary day-to-day variation, and calling
+            # it a trend would be reading noise.
+            spread = out["baseline"]["std"] if out["baseline"] else 0.0
             out["slope"] = {
                 "points_per_week": round(slope, 2),
-                "direction": ("worsening" if slope > 1.0 else
-                              "improving" if slope < -1.0 else "stable"),
-                "span_weeks": round(xs[-1], 1),
+                # Neutral, mathematical words only. "Worsening" is an
+                # interpretation, and this layer reports rather than interprets
+                # — the reading below is where meaning gets attached.
+                "direction": ("rising" if slope > 1.0 else
+                              "easing" if slope < -1.0 else "steady"),
+                "total_change": round(total_change, 1),
+                "exceeds_variation": bool(spread > 0 and abs(total_change) >= spread),
+                "span_weeks": round(span, 1),
                 "n": nx,
             }
+
+    out["reading"] = _trend_reading([s for _, s in scores], out.get("slope"))
 
     # Red flags across history
     flags = []
