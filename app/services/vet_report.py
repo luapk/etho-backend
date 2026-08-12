@@ -205,6 +205,22 @@ def build_report(pet_id: str, reason_for_visit: str = None) -> dict:
                 "over time (points/week, minimum 4 observations). Each pet is "
                 "compared only against its own history."
             ),
+            "metric_baselines": (
+                "The same baseline is computed separately for each stored "
+                "metric (grimace/pain instrument total, sleeping respiratory "
+                "rate, activity level, cough-like sound count). A metric is "
+                "flagged only when ALL of the following hold: the change is in "
+                "the clinically concerning direction for that metric; it is "
+                ">= 1.5 SD from this pet's own prior mean (skipped when prior "
+                "observations show no variance at all); and it exceeds a "
+                "minimum change in real units. That minimum is 1.0 instrument "
+                "point, 4 breaths/min (chosen above the <= 3 bpm mean absolute "
+                "error the respiration service is validated to), 25% of the "
+                "pet's own mean for activity level, and 2 cough-like sounds. "
+                "Instrument totals are only compared against observations "
+                "scored on the SAME instrument. Published absolute thresholds "
+                "are reported alongside and are not superseded by this."
+            ),
         },
         "disclaimer": DISCLAIMER,
     }
@@ -272,6 +288,41 @@ def render_markdown(report: dict) -> str:
     else:
         add("- Trend slope: not yet computable (needs >= 4 observations).")
     add("")
+
+    # Every other stored metric against this animal's own history.
+    #
+    # This section exists because published absolute thresholds only fire once
+    # an animal is already past a cut-off, and a species that masks pain often
+    # never gets there. A grimace score moving 0 -> 3 is under the >= 4/10
+    # analgesia threshold and is still the clearest signal in the record. Each
+    # row states the change, what it changed from, the floor it had to clear,
+    # and the published threshold where one exists — so a clinician can see
+    # both facts at once and weigh them.
+    metrics = t.get("metrics") or []
+    if metrics:
+        add("## Per-Metric Baselines (each pet is its own control)")
+        add("")
+        add("| Metric | Latest | This pet's baseline | Change | Source | Flag |")
+        add("|---|---|---|---|---|---|")
+        for m in metrics:
+            sd = (f"{m['deviation_sigma']:+.2f} SD" if m["deviation_sigma"] is not None
+                  else "no variance in prior obs")
+            kind = "measured" if m["kind"] == "measured" else "AI-estimated"
+            add(f"| {m['label']} | {m['latest']}{m['unit']} | "
+                f"{m['mean']} +/- {m['std']} (n={m['n']}) | "
+                f"{m['change']:+.2f} ({sd}) | {kind} | "
+                f"{'**YES**' if m['flag'] else 'no'} |")
+        add("")
+        for m in metrics:
+            if m["flag"]:
+                add(f"- {m['reading']}")
+        add("")
+        add("Direction matters: only the clinically concerning direction is "
+            "flagged (a falling pain score or a rising activity level is not). "
+            "A change must also exceed a minimum in real units, so a pet with "
+            "a very consistent history is not flagged for trivia that happens "
+            "to sit several SD out.")
+        add("")
 
     if t.get("red_flags"):
         add("## Flagged Events")
@@ -407,6 +458,7 @@ def render_markdown(report: dict) -> str:
     add(f"- **Respiratory rate:** {meth['respiratory']}")
     add(f"- **Weight screening:** {meth['weight_screening']}")
     add(f"- **Baseline math:** {meth['baseline_math']}")
+    add(f"- **Per-metric baselines:** {meth['metric_baselines']}")
     add("- **System versions used:** " + "; ".join(
         f"pipeline {v['pipeline'] or '?'} / prompt {v['prompt'] or '?'} / "
         f"model {v['model'] or '?'}" for v in report["system_versions"]) + ".")

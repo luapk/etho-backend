@@ -317,6 +317,7 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
   const slope = trends?.slope;
   const reading = trends?.reading;
   const flags = trends?.red_flags || [];
+  const metrics = trends?.metrics || [];
 
   return (
     <div className={`px-4 md:px-6 ${embedded ? "pt-5 pb-10" : "min-h-screen py-8"}`}>
@@ -452,6 +453,66 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                   ))}
                 </ul>
               </motion.div>
+            )}
+
+            {/* What's changed against their own normal.
+                Separate from the vet-flag panel above on purpose: that one is
+                a list of moments that crossed a published threshold, this is
+                the slow drift that never does. For an animal that masks pain,
+                this is the panel that actually catches something — so it shows
+                every metric with enough history, not just the ones flagged,
+                because "steady" is a real and reassuring answer. */}
+            {metrics.length > 0 && (
+              <div className="glass-card rounded-2xl p-5">
+                <h2 className="font-roboto font-bold text-white mb-1">
+                  Against {pet?.name}'s own normal
+                </h2>
+                <p className="font-roboto text-white/50 text-sm mb-4">
+                  Cats and stoic dogs hide discomfort well, so what matters is
+                  change over time rather than any single number.
+                </p>
+                <div className="space-y-2.5">
+                  {metrics.map((m) => (
+                    <div key={m.key}
+                         className={`rounded-xl p-3.5 border ${m.flag
+                           ? 'bg-amber-400/10 border-amber-300/50'
+                           : 'bg-white/5 border-white/10'}`}>
+                      <div className="flex items-baseline justify-between gap-3 flex-wrap">
+                        <span className="font-roboto text-white font-bold text-sm">
+                          {m.label}
+                        </span>
+                        <span className="font-roboto text-white/50 text-[10px] font-bold uppercase tracking-wider">
+                          {m.kind === 'measured' ? 'Measured' : 'AI-estimated'}
+                        </span>
+                      </div>
+                      <div className="flex items-baseline gap-2 mt-1 flex-wrap">
+                        <span className="font-roboto font-black text-white text-2xl">
+                          {m.latest}<span className="text-xs font-bold text-white/50">{m.unit}</span>
+                        </span>
+                        <span className="font-roboto text-white/60 text-xs">
+                          usual {m.mean} ± {m.std} · {m.n} before this
+                        </span>
+                      </div>
+                      {m.flag ? (
+                        <p className="font-roboto text-amber-100 text-xs mt-2 leading-relaxed">
+                          {m.reading}
+                        </p>
+                      ) : (
+                        <p className="font-roboto text-white/45 text-xs mt-1.5">
+                          {m.change > 0 ? 'Up' : m.change < 0 ? 'Down' : 'No change'}
+                          {m.change !== 0 && ` ${Math.abs(m.change)}${m.unit} on their usual`}
+                          {' — '}steady for their own range.
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <p className="font-roboto text-white/35 text-xs mt-4">
+                  Only the concerning direction is flagged, and only when the
+                  change is big enough to mean something — not merely unusual.
+                  None of this is a diagnosis.
+                </p>
+              </div>
             )}
 
             {/* Capture filmstrip */}

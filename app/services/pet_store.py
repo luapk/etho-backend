@@ -27,6 +27,7 @@ import sqlite3
 import threading
 import uuid
 from datetime import datetime, timezone
+from typing import Optional
 
 def _resolve_data_dir() -> str:
     """Where the longitudinal database lives.
@@ -857,6 +858,215 @@ def _trend_reading(all_scores: list, slope: dict = None) -> dict:
     return {"headline": "Elevated", "detail": detail, "tone": "attention"}
 
 
+# ── Per-metric baselines ─────────────────────────────────────────────────────
+#
+# Why this exists, and why it is the most important thing in this file.
+#
+# Cats suppress pain display around observers and stoic dogs hold a normal
+# posture through a great deal, so no single clip is going to catch either of
+# them out. What DOES leak is change: an animal that masks, masks consistently,
+# and the drift against their own history is the signal.
+#
+# The baseline machinery was already here — but it was pointed at exactly one
+# number, `distress_score`, which is the AI-estimated one. Meanwhile the FGS
+# total, the sleeping respiratory rate, the activity level and the cough count
+# were all being stored per observation and never compared to anything except
+# a published absolute threshold. A stoic cat running 0, 0, 0, 2, 2, 3 on the
+# grimace scale never reaches the ≥4/10 flag, and nothing fired — even though
+# that is a measured facial instrument tripling against the animal's own
+# normal, which is precisely the pattern a masking animal produces.
+#
+# Two guards on every metric, and both are load-bearing:
+#
+#   1. Direction. Only the clinically concerning direction raises. A cat that
+#      gets calmer or a dog that becomes MORE active is not a finding.
+#   2. A floor in real units. A pet with a very tight history has a tiny SD, so
+#      a trivial wobble is several SD out — mathematically dramatic and
+#      clinically nothing. Each metric therefore also has to move by an amount
+#      that means something, and where we know the measurement error we use it:
+#      the respiratory floor is 4 bpm because the service is only allowed to
+#      ship numbers at MAE ≤ 3 bpm, so anything smaller could be the instrument
+#      rather than the animal.
+#
+# What this is NOT: a diagnosis, a combined risk score, or a claim that a
+# changed number means disease. Every reading says what changed, against what,
+# and by how much — and where a published absolute threshold exists it is
+# quoted alongside, including when the pet is still comfortably under it.
+
+MIN_BASELINE_N = 3       # same rule as the distress baseline
+MIN_SLOPE_N = 4
+DEVIATION_SIGMA = 1.5
+
+_METRIC_SPECS = [
+    {
+        "key": "instrument_total",
+        "label": "Grimace / pain instrument",
+        "unit": "",
+        "kind": "ai_estimated",
+        "concern": "up",
+        "min_change": 1.0,          # one whole instrument point
+        # Different instruments have different maximums, so a Feline Grimace
+        # total and a Glasgow subset total are not the same measurement and
+        # must never share a baseline. Only rows scored on the SAME instrument
+        # as the latest one are compared.
+        "same_instrument": True,
+        "why": "Facial pain scoring is the least maskable thing we score on a cat.",
+    },
+    {
+        "key": "resp_rate_bpm",
+        "label": "Sleeping respiratory rate",
+        "unit": "/min",
+        "kind": "measured",
+        "concern": "up",
+        "min_change": 4.0,          # just above the ≤3 bpm MAE the service ships at
+        "why": "The at-home measure vets use to screen cardiac and airway disease.",
+    },
+    {
+        "key": "activity_level",
+        "label": "Activity level",
+        "unit": "",
+        "kind": "measured",
+        "concern": "down",          # lethargy, not liveliness
+        "min_change_frac": 0.25,    # a quarter of their own usual; the units are
+                                    # relative motion energy, so an absolute
+                                    # floor would mean nothing across pets
+        "why": "A drop in movement is one of the earliest and most general illness signs.",
+    },
+    {
+        "key": "cough_like_count",
+        "label": "Cough-like sounds",
+        "unit": " per clip",
+        "kind": "measured",
+        "concern": "up",
+        "min_change": 2.0,
+        "why": "Coughing frequency is clinically meaningful; the count is a heuristic screen.",
+    },
+]
+
+
+def _series_stats(series: list, spec: dict) -> Optional[dict]:
+    """Baseline, deviation and slope for one metric's history.
+
+    `series` is [(iso_timestamp, value)] oldest first, Nones already removed.
+    Returns None when there is not enough history to say anything — which is a
+    normal answer and is reported as such, never as a pass.
+    """
+    if len(series) < MIN_BASELINE_N:
+        return None
+
+    prior = [v for _, v in series[:-1]]
+    latest_at, latest = series[-1]
+    mean = sum(prior) / len(prior)
+    std = (sum((v - mean) ** 2 for v in prior) / len(prior)) ** 0.5
+    delta = latest - mean
+    # None, not 0.0, when the pet's history is perfectly flat. There is no
+    # spread to express the change as a multiple of, and calling that "0 SD"
+    # would read as "no change" for what may be the largest move in the record.
+    sigma = round(delta / std, 2) if std > 0 else None
+
+    floor = spec.get("min_change")
+    if floor is None:
+        floor = abs(mean) * spec.get("min_change_frac", 0.25)
+    concerning_direction = delta > 0 if spec["concern"] == "up" else delta < 0
+
+    out = {
+        "key": spec["key"],
+        "label": spec["label"],
+        "unit": spec["unit"],
+        "kind": spec["kind"],
+        "concern": spec["concern"],
+        "why": spec["why"],
+        "n": len(prior),
+        "mean": round(mean, 2),
+        "std": round(std, 2),
+        "latest": round(latest, 2),
+        "latest_at": latest_at,
+        "deviation_sigma": sigma,
+        "change": round(delta, 2),
+        "min_change": round(floor, 2),
+        # Both gates, always. Statistically unusual is not enough on its own —
+        # a pet with a very consistent history makes trivia look extreme — and
+        # a big move is not enough either if the animal swings that much
+        # anyway.
+        #
+        # The SD gate is SKIPPED when the history is perfectly flat, because
+        # otherwise the most consistent animals become the ones nothing can
+        # ever be detected in: five identical readings give std 0, every sigma
+        # is undefined, and a sixth reading twice the size of the others would
+        # pass silently. On a flat history the real-units floor carries the
+        # decision alone, which is the stricter of the two anyway.
+        "flag": bool(concerning_direction and abs(delta) >= floor
+                     and (sigma is None or abs(sigma) >= DEVIATION_SIGMA)),
+    }
+
+    if len(series) >= MIN_SLOPE_N:
+        t0 = datetime.fromisoformat(series[0][0])
+        xs = [(datetime.fromisoformat(ts) - t0).total_seconds() / 604800.0
+              for ts, _ in series]
+        ys = [v for _, v in series]
+        mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+        denom = sum((x - mx) ** 2 for x in xs)
+        if denom > 0:
+            slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / denom
+            out["slope_per_week"] = round(slope, 3)
+            out["span_weeks"] = round(xs[-1], 1)
+    return out
+
+
+# Published absolute thresholds, quoted alongside a baseline change so a
+# guardian can see both: "changed against their own normal" and "still under
+# the number the literature uses" are different facts and both matter.
+_ABSOLUTE_NOTE = {
+    "instrument_total": (4.0, "the published analgesia-consideration threshold "
+                              "for the Feline Grimace Scale is ≥ 4/10"),
+    "resp_rate_bpm": (30.0, "the published screening threshold is > 30/min sustained"),
+}
+
+
+def _metric_reading(m: dict) -> str:
+    """One sentence a guardian can carry to a vet. States the change, what it
+    changed from, and the published threshold where one exists — including
+    when the pet is still below it, which is the whole point of watching a
+    baseline rather than a cut-off."""
+    up = m["change"] > 0
+    unit = m["unit"]
+    line = (f"{m['label']} is {m['latest']}{unit} — {'up' if up else 'down'} from "
+            f"their usual {m['mean']} ± {m['std']} across {m['n']} earlier "
+            f"observations")
+    line += (f" ({abs(m['deviation_sigma'])} SD {'above' if up else 'below'})."
+             if m["deviation_sigma"] is not None
+             else ", every one of which was the same figure.")
+    absolute = _ABSOLUTE_NOTE.get(m["key"])
+    if absolute:
+        limit, text = absolute
+        line += (f" Still below {limit:g} — {text} — but this is a change against "
+                 f"their own normal." if m["latest"] < limit
+                 else f" This is also past {limit:g}: {text}.")
+    return line
+
+
+def compute_metric_trends(history: list) -> list:
+    """Per-metric baselines across a pet's history, newest observation last."""
+    out = []
+    for spec in _METRIC_SPECS:
+        rows = history
+        if spec.get("same_instrument"):
+            # Walk back for the most recent row that was actually scored, then
+            # keep only rows on that same instrument.
+            scored = [h for h in history if h.get(spec["key"]) is not None]
+            if not scored:
+                continue
+            instrument = scored[-1].get("instrument")
+            rows = [h for h in history if h.get("instrument") == instrument]
+        series = [(h["created_at"], float(h[spec["key"]]))
+                  for h in rows if h.get(spec["key"]) is not None]
+        stats = _series_stats(series, spec)
+        if stats:
+            stats["reading"] = _metric_reading(stats)
+            out.append(stats)
+    return out
+
+
 def compute_trends(pet_id: str) -> dict:
     """Transparent, simple statistics over a pet's history. Each pet serves as
     its own control (intra-subject comparison) — absolute scores across pets
@@ -931,8 +1141,20 @@ def compute_trends(pet_id: str) -> dict:
 
     out["reading"] = _trend_reading([s for _, s in scores], out.get("slope"))
 
+    # Every OTHER metric we store, each against this pet's own history. This is
+    # the half that catches a masking animal: the absolute thresholds below
+    # only fire once a pet is already past a published cut-off, whereas a
+    # stoic cat's grimace score creeping from 0 to 3 never gets there and is
+    # still the clearest thing in the record.
+    out["metrics"] = compute_metric_trends(history)
+
     # Red flags across history
     flags = []
+    for m in out["metrics"]:
+        if m["flag"]:
+            flags.append({"created_at": m["latest_at"],
+                          "type": f"{m['key']}_baseline",
+                          "detail": m["reading"]})
     for h in history:
         if h["zone"] == "red":
             flags.append({"created_at": h["created_at"], "type": "red_zone",
