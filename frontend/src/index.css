@@ -213,6 +213,16 @@ input:focus-visible {
     min-height: 44px;
     min-width: 44px;
   }
+
+  /* Opt-out for small secondary controls tucked into the corner of a larger
+     tap target. A 44px invisible box in the corner of a timeline tile reaches
+     back over the sparkline and steals taps meant for the tile itself — worse
+     than a small target, especially when the action behind it is guarded by a
+     confirmation anyway. */
+  button.tap-compact {
+    min-height: 30px;
+    min-width: 30px;
+  }
   
   /* Larger touch targets for waveform */
   .waveform-bar {

@@ -95,33 +95,70 @@ function Sparkline({ curve }) {
  *  the amplitude envelope, with a tick where each vocalization was measured.
  *  Two strips sharing an axis answer "was it noisy when they were tense?" —
  *  which neither strip answers alone. */
-function AudioStrip({ envelope, events, durationSec, present }) {
-  if (!present) {
+function AudioStrip({ envelope, events, durationSec, present, eventCount }) {
+  const W = 180, H = 18;
+
+  /* Four distinct states, and they must not be confused with each other.
+   *
+   * The strip used to treat anything falsy as silence, so a clip whose audio
+   * WAS analysed — but was analysed before the envelope existed, or by a
+   * backend that doesn't report the field yet — was labelled "No audio" while
+   * the observation view showed its measured frequencies. Saying a clip has no
+   * sound when it demonstrably does is worse than saying nothing.
+   *
+   * present === false  → genuinely silent, say so
+   * envelope           → draw the measured shape
+   * events only        → draw where the sounds were, no invented shape
+   * neither            → report the count in words, claim no shape at all
+   * present == null    → we were not told; stay quiet rather than guess
+   */
+  if (present === false) {
     return (
       <div className="h-5 flex items-center">
         <span className="font-roboto text-white/25 text-[10px]">No audio</span>
       </div>
     );
   }
-  if (!envelope?.length) return <div className="h-5" />;
-  const W = 180, H = 18;
-  const bw = W / envelope.length;
-  const dur = durationSec || 1;
+  if (present === null || present === undefined) return <div className="h-5" />;
+
+  const dur = durationSec || Math.max(1, ...(events || []).map((e) => e.t_sec || 0)) || 1;
+  const ticks = (events || []).map((e, i) => (
+    <circle key={i} cx={Math.min(W - 2, Math.max(2, (e.t_sec / dur) * W))} cy={H - 2} r="2"
+            fill="#38bdf8" stroke="rgba(255,255,255,0.85)" strokeWidth="0.5" />
+  ));
+
+  if (envelope?.length) {
+    const bw = W / envelope.length;
+    return (
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-5" aria-hidden="true">
+        {envelope.map((v, i) => {
+          const h = Math.max(1, v * (H - 5));
+          return <rect key={i} x={i * bw} y={H - 4 - h} width={Math.max(0.6, bw - 0.5)}
+                       height={h} fill="rgba(255,255,255,0.45)" rx="0.4" />;
+        })}
+        <line x1="0" y1={H - 3.5} x2={W} y2={H - 3.5} stroke="rgba(255,255,255,0.25)" strokeWidth="0.6" />
+        {ticks}
+      </svg>
+    );
+  }
+
+  if (events?.length) {
+    return (
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-5" aria-hidden="true">
+        <line x1="0" y1={H - 3.5} x2={W} y2={H - 3.5} stroke="rgba(255,255,255,0.25)" strokeWidth="0.6" />
+        {ticks}
+      </svg>
+    );
+  }
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-5" aria-hidden="true">
-      {envelope.map((v, i) => {
-        const h = Math.max(1, v * (H - 5));
-        return <rect key={i} x={i * bw} y={H - 4 - h} width={Math.max(0.6, bw - 0.5)}
-                     height={h} fill="rgba(255,255,255,0.45)" rx="0.4" />;
-      })}
-      <line x1="0" y1={H - 3.5} x2={W} y2={H - 3.5} stroke="rgba(255,255,255,0.25)" strokeWidth="0.6" />
-      {/* Where a vocalization was actually measured. Sat on the baseline before
-          and got clipped by the viewBox edge. */}
-      {(events || []).map((e, i) => (
-        <circle key={i} cx={Math.min(W - 2, Math.max(2, (e.t_sec / dur) * W))} cy={H - 2} r="2"
-                fill="#38bdf8" stroke="rgba(255,255,255,0.85)" strokeWidth="0.5" />
-      ))}
-    </svg>
+    <div className="h-5 flex items-center">
+      <span className="font-roboto text-white/35 text-[10px] truncate">
+        {eventCount
+          ? `${eventCount} sound${eventCount === 1 ? '' : 's'} · no waveform`
+          : 'Audio analysed · no waveform'}
+      </span>
+    </div>
   );
 }
 
@@ -453,9 +490,9 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                     <button
                       onClick={(e) => { e.stopPropagation(); setDeleting(item.analysis_id); }}
                       aria-label="Delete this observation"
-                      className="absolute top-1.5 right-1.5 z-10 p-1.5 rounded-lg bg-black/40 hover:bg-red-500/80 text-white/70 hover:text-white transition-colors"
+                      className="tap-compact absolute bottom-1 right-1 z-10 flex items-center justify-center text-white/45 hover:text-red-300 drop-shadow-[0_1px_3px_rgba(0,0,0,0.55)] transition-colors"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <Trash2 className="w-4 h-4" />
                     </button>
 
                     {pendingDelete && (
@@ -485,9 +522,14 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                       </div>
                     )}
 
+                    {/* h-full so the card fills its wrapper. The wrapper is a
+                        stretched flex item as tall as the tallest tile in the
+                        row; without it a short tile's card stops early and the
+                        corner delete button lands on the background below the
+                        card instead of inside the tile. */}
                     <button
                       onClick={() => onOpenAnalysis?.(item.analysis_id, item.date)}
-                      className="w-full glass-card rounded-2xl overflow-hidden text-left transition-all hover:bg-white/25 focus:outline-none focus:ring-2 focus:ring-white"
+                      className="w-full h-full glass-card rounded-2xl overflow-hidden text-left transition-all hover:bg-white/25 focus:outline-none focus:ring-2 focus:ring-white"
                     >
                       <Poster
                         analysisId={item.analysis_id}
@@ -524,8 +566,9 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                           events={item.vocal_events}
                           durationSec={item.audio_duration_sec}
                           present={item.audio_present}
+                          eventCount={item.audio_event_count}
                         />
-                        <div className="flex flex-wrap gap-1">
+                        <div className="flex flex-wrap gap-1 pr-7">
                           {item.context && (
                             <span className="px-1.5 py-0.5 rounded bg-white/15 border border-white/20 text-white/80 text-[10px] font-bold capitalize">
                               {item.context.replace(/_/g, ' ')}

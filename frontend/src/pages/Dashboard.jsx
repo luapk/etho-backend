@@ -766,37 +766,58 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
               </AnimatePresence>
             </div>
             
-            {/* Subtitle toggle - slider on left. Playback chrome: a still has
-                nothing to sync captions to, so its one POV line is rendered
-                as a fixed caption below instead. */}
+            {/* Playback options.
+                Two labelled pills rather than a switch and a bare icon. The
+                switch was a 44x24 track, and index.css floors every button on
+                mobile at 44x44 for tap targets — so it inflated into a teal
+                circle with the knob stranded in the corner. A control whose
+                shape depends on not colliding with a global rule is the wrong
+                control; these read the same at any size and say what they do
+                and whether they are on, instead of leaving a slider position
+                to be interpreted.
+                A still has nothing to sync captions to, so its single POV line
+                is a fixed caption below the image instead. */}
             {!isStill ? (
-            <div className="p-4 flex items-center justify-between border-t border-white/10">
-              <div className="flex items-center gap-3">
-                {/* Slider Toggle - fixed overflow */}
-                <button
-                  onClick={() => setSubtitlesEnabled(!subtitlesEnabled)}
-                  className={`relative w-11 h-6 rounded-full transition-colors duration-200 flex-shrink-0 ${
-                    subtitlesEnabled ? 'bg-cyan-500' : 'bg-white/20'
-                  }`}
-                >
-                  <span 
-                    className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200 ${
-                      subtitlesEnabled ? 'translate-x-5' : 'translate-x-0'
-                    }`}
-                  />
-                </button>
-                <Subtitles className="w-5 h-5 text-white/70" />
-                <span className="font-roboto text-white text-sm">Pet Subtitles</span>
-              </div>
+            <div className="p-3 flex items-center gap-2 flex-wrap border-t border-white/10">
+              <button
+                onClick={() => setSubtitlesEnabled(!subtitlesEnabled)}
+                aria-pressed={subtitlesEnabled}
+                className={`flex items-center gap-2 pl-3 pr-3.5 py-2 rounded-xl font-roboto text-sm transition-colors ${
+                  subtitlesEnabled
+                    ? 'bg-cyan-400/25 text-white ring-1 ring-cyan-300/60'
+                    : 'bg-white/10 text-white/60 hover:bg-white/20'
+                }`}
+              >
+                <Subtitles className="w-4 h-4" />
+                <span className="font-medium">Pet subtitles</span>
+                <span className={`text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                  subtitlesEnabled ? 'bg-cyan-300/30 text-cyan-100' : 'bg-white/10 text-white/45'
+                }`}>
+                  {subtitlesEnabled ? 'On' : 'Off'}
+                </span>
+              </button>
+
               <button
                 onClick={() => setAudioEnabled(!audioEnabled)}
-                className={`p-2 rounded-full transition-colors ${
-                  audioEnabled ? 'bg-cyan-500/30 text-cyan-300' : 'bg-white/10 text-white/50'
+                aria-pressed={audioEnabled}
+                className={`flex items-center gap-2 pl-3 pr-3.5 py-2 rounded-xl font-roboto text-sm transition-colors ${
+                  audioEnabled
+                    ? 'bg-cyan-400/25 text-white ring-1 ring-cyan-300/60'
+                    : 'bg-white/10 text-white/60 hover:bg-white/20'
                 }`}
-                title={audioEnabled ? 'Mute voice' : 'Enable voice'}
               >
                 {audioEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                <span className="font-medium">Read aloud</span>
+                <span className={`text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                  audioEnabled ? 'bg-cyan-300/30 text-cyan-100' : 'bg-white/10 text-white/45'
+                }`}>
+                  {audioEnabled ? 'On' : 'Off'}
+                </span>
               </button>
+
+              <span className="font-roboto text-white/35 text-xs ml-auto hidden sm:block">
+                What they'd be saying, as the clip plays
+              </span>
             </div>
             ) : stillCaption ? (
               <div className="p-4 border-t border-white/10">

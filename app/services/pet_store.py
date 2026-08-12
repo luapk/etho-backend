@@ -627,8 +627,14 @@ def get_timeline_feed(pet_id: str, limit: int = 200) -> list:
             "distress_curve": curve,
             # Measured audio, for the mini strip: the shape of the sound and
             # where the vocalizations actually were.
-            "audio_present": bool(am.get("audio_present")),
+            # None when audio was never analysed (no metrics stored at all),
+            # False only when the service looked and found no track. The UI
+            # says "No audio" for False and stays silent for None — asserting
+            # a clip has no sound when nobody checked is the same mistake as
+            # asserting it has some.
+            "audio_present": am.get("audio_present") if am else None,
             "audio_envelope": mini,
+            "audio_event_count": am.get("vocalization_event_count"),
             "audio_duration_sec": audio_dur,
             "vocal_events": vocal[:40],
         })
