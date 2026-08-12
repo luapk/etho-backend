@@ -303,10 +303,19 @@ const CustomTooltip = ({ active, payload }) => {
   return null;
 };
 
+/** The zone a score falls in. The ONLY way a dot gets its colour.
+ *  It used to be painted from the marker's own `zone`, which several of the
+ *  chart's five marker sources derived by keyword-matching the label text —
+ *  a completely different calculation from the score that sets the dot's
+ *  height. So a "purr" scored 45 plotted in the amber band and painted itself
+ *  green. Colour is now read off the plotted value, so the two cannot disagree. */
+const zoneOfScore = (s) =>
+  s == null ? 'yellow' : s <= 33 ? 'green' : s <= 66 ? 'yellow' : 'red';
+
 const MarkerDot = ({ cx, cy, payload, onClick }) => {
   if (!payload?.marker) return null;
   return (
-    <circle cx={cx} cy={cy} r={10} fill={ZONE_CONFIG[payload.markerZone]?.color || '#94a3b8'}
+    <circle cx={cx} cy={cy} r={10} fill={ZONE_CONFIG[zoneOfScore(payload.score)]?.color || '#94a3b8'}
       stroke="rgba(255,255,255,0.9)" strokeWidth={2}
       style={{ cursor: 'pointer', filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.4))' }}
       onClick={() => onClick?.(payload.timeSeconds)} />
@@ -590,7 +599,14 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
     for (let i = 0; i <= total * 2; i++) {
       const t = i / 2, timeLabel = `${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
       const nearby = markers.filter(m => Math.abs(m.time - t) < 2);
-      let score = nearby.length > 0 ? nearby.reduce((s,m) => s + m.score, 0) / nearby.length + Math.sin(i*0.3)*5 : distressScore + Math.sin(i*0.2)*3;
+      // No synthetic wobble. This used to add Math.sin(i)*5 between markers,
+      // which drew a wavering line implying moment-to-moment measurement that
+      // was never taken — and could push a point across a zone boundary on
+      // nothing but a sine wave. Between scored moments the line now simply
+      // interpolates, which is the honest shape of what we know.
+      const score = nearby.length > 0
+        ? nearby.reduce((s, m) => s + m.score, 0) / nearby.length
+        : distressScore;
       const exact = markers.find(m => Math.abs(m.time - t) < 0.5);
       points.push({ 
         time: timeLabel, 

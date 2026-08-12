@@ -85,6 +85,7 @@ GET   /api/pets/{id}/trends             baseline ± SD, latest deviation, slope 
 GET   /api/pets/{id}/capture-plan       what's worth filming next, and why (breed-driven)
 GET   /api/pets/{id}/breed-context      population predispositions for the CONFIRMED breed
 GET   /api/analyses/{id}                full stored raw result (provenance) + has_poster/has_media
+PATCH /api/analyses/{id}                correct the observation date (stamped capture_time_source=manual)
 GET   /api/analyses/{id}/poster         timeline thumbnail (JPEG, owner-scoped)
 GET   /api/analyses/{id}/media          stored annotated clip/photo (404 once evicted)
 GET   /api/pets/{id}/vet-report?format=markdown|json&reason=...   pre-consultation document
@@ -97,6 +98,8 @@ GET   /api/batch/{batch_id}             batch progress (in-memory; analyses pers
 POST  /api/pets/{id}/weights            log a weight (syncs profile weight_kg, returns screening)
 GET   /api/pets/{id}/weights            weight log + breed-range assessment
 ```
+
+**Undated media can be corrected by hand** (`PATCH /api/analyses/{id}`): roughly a fifth of a camera roll has no usable capture date — screenshots and anything saved from a messaging app lose it — and those land on the upload day, which bends every trend running through them. The guardian usually knows the real date, and the observation detail view asks for it when `capture_time_source` is `unknown` or `filename`. A hand-set date is stored as `capture_time_source="manual"`, never disguised as EXIF: a typed date and a read-from-file date are both legitimate but they are not the same evidence, and the vet report prints which.
 
 **Capture time, not upload time** (`media_metadata.py`): every record is dated by when the media was RECORDED — EXIF `DateTimeOriginal` for photos, container `creation_time` for videos, filename patterns (`IMG_20260315_143022`, `PXL_…`, WhatsApp `IMG-20260315-WA…`) as a fallback since messaging apps strip metadata. Without this, importing a phone backlog would stamp months of history onto a single day and destroy the record. `created_at` = observation date; `uploaded_at` = when it reached us; `capture_time_source` (exif|video_metadata|filename|unknown) makes every date auditable.
 

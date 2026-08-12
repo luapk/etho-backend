@@ -85,6 +85,13 @@ export const getBreedContext = (id) =>
 export const getAnalysis = (id) =>
   client.get(`/api/analyses/${id}`).then((r) => r.data.analysis);
 
+/** Correct when an observation actually happened.
+ *  Stored as capture_time_source="manual" — a typed date is legitimate, but it
+ *  is not the same evidence as one read from the file, and the record says so. */
+export const setAnalysisDate = (id, observedAt) =>
+  client.patch(`/api/analyses/${id}`, { observed_at: observedAt })
+        .then((r) => r.data.analysis);
+
 export const getVetReport = (id, reason) =>
   client
     .get(`/api/pets/${id}/vet-report`, {

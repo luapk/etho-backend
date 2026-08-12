@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, PlainTextResponse
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime, timezone, timedelta
 import tempfile
 import os
 import shutil
@@ -999,6 +1000,45 @@ async def get_analysis(analysis_id: str, auth: dict = Depends(get_auth)):
     rec["has_poster"] = media_store.has_poster(analysis_id)
     rec["has_media"] = media_store.has_media(analysis_id)
     return {"success": True, "analysis": rec}
+
+
+class AnalysisUpdate(BaseModel):
+    observed_at: str        # ISO date (YYYY-MM-DD) or full ISO-8601 timestamp
+
+
+@app.patch("/api/analyses/{analysis_id}")
+async def update_analysis(analysis_id: str, patch: AnalysisUpdate,
+                          auth: dict = Depends(get_auth)):
+    """Correct the date an observation was recorded.
+
+    Media without usable metadata is dated to the upload day, which puts it in
+    the wrong place on the timeline and drags the trend line with it. The
+    guardian usually knows when it actually happened.
+
+    The new date is stamped `capture_time_source = "manual"` rather than
+    disguised as EXIF: a typed date and a read-from-file date are both valid,
+    but they are different kinds of evidence and the vet report says which.
+    """
+    _authorized_analysis(analysis_id, auth)
+
+    raw = (patch.observed_at or "").strip()
+    try:
+        when = datetime.fromisoformat(raw)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Use a date like 2026-03-15, or a full timestamp.")
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    if when > datetime.now(timezone.utc) + timedelta(days=1):
+        raise HTTPException(status_code=400,
+                            detail="That date is in the future.")
+    if when.year < 2000:
+        raise HTTPException(status_code=400,
+                            detail="That date is too far in the past to be a photo of your pet.")
+
+    pet_store.set_observed_at(analysis_id, when.isoformat(timespec="microseconds"))
+    return {"success": True, "analysis": pet_store.get_analysis(analysis_id)}
 
 
 @app.get("/api/analyses/{analysis_id}/poster")

@@ -432,6 +432,28 @@ def get_full_results(pet_id: str, limit: int = 200) -> list:
             for r in rows]
 
 
+def set_observed_at(analysis_id: str, observed_at: str) -> bool:
+    """Correct when an observation actually happened.
+
+    Roughly a fifth of a camera roll has no real capture date — screenshots and
+    anything saved from a messaging app lose it — and those land on the upload
+    day, which quietly bends every trend that runs through them. The guardian
+    often knows the true date, so they are allowed to say.
+
+    The correction is recorded as `capture_time_source = "manual"`, not passed
+    off as EXIF. A date a human typed and a date read from the file are both
+    legitimate, but they are not the same kind of evidence, and the vet report
+    prints which one it was.
+    """
+    with _lock, _connect() as conn:
+        cur = conn.execute(
+            "UPDATE analyses SET created_at = ?, capture_time_source = 'manual' "
+            "WHERE id = ?",
+            (observed_at, analysis_id),
+        )
+        return cur.rowcount > 0
+
+
 def count_analyses() -> int:
     """Total analyses on record. Used by /health to report what fraction of the
     record actually has pictures — the one number that separates "the backend

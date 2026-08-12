@@ -251,6 +251,7 @@ export default function PetPage({
           analysisId={detail.id}
           embedded
           onBack={closeObservation}
+          onDateChanged={(iso) => setDetail((d) => ({ ...d, date: iso }))}
         />
       )}
     </div>

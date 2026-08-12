@@ -211,6 +211,25 @@ check("pet list reflects removal",
 r = client.get(f"/api/pets/{pet['id']}/avatar", headers=H1)
 check("missing avatar 404s", r.status_code == 404)
 
+# ── Correcting an observation's date ──
+r = client.patch(f"/api/analyses/{analysis_id}", json={"observed_at": "2026-03-15"}, headers=H1)
+check("owner can correct the date", r.status_code == 200, r.text[:120])
+rec2 = r.json()["analysis"]
+check("date moved", rec2["created_at"].startswith("2026-03-15"), rec2["created_at"])
+check("correction is recorded as manual, not passed off as EXIF",
+      rec2["capture_time_source"] == "manual", rec2["capture_time_source"])
+
+r = client.patch(f"/api/analyses/{analysis_id}", json={"observed_at": "2026-03-15"}, headers=H2)
+check("other owner cannot edit the date (404)", r.status_code == 404, r.status_code)
+
+for bad, why in [("not-a-date", "gibberish"), ("2099-01-01", "future"), ("1970-01-01", "pre-2000")]:
+    r = client.patch(f"/api/analyses/{analysis_id}", json={"observed_at": bad}, headers=H1)
+    check(f"rejects {why} date", r.status_code == 400, f"{bad} -> {r.status_code}")
+
+check("a rejected edit leaves the date alone",
+      client.get(f"/api/analyses/{analysis_id}", headers=H1)
+            .json()["analysis"]["created_at"].startswith("2026-03-15"))
+
 tl = client.get(f"/api/pets/{pet['id']}/timeline", headers=H1).json()["timeline"]
 entry = [i for i in tl if i["type"] == "analysis"][0]
 check("timeline feed carries has_poster", entry["has_poster"] is True)
