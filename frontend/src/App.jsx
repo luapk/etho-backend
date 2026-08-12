@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Menu, X, Home, Info, Activity, Lock, PawPrint, Upload } from 'lucide-react';
+import { Menu, X, Home, Info, Activity, Lock, PawPrint, Upload, List } from 'lucide-react';
 import { listPets } from './api';
 import Hero from './pages/Hero';
 import Landing from './pages/Landing';
@@ -34,6 +34,8 @@ function App() {
   const [petTab, setPetTab] = useState('timeline');
   const [openAnalysisId, setOpenAnalysisId] = useState(null);
   const [booting, setBooting] = useState(false);
+  // Kept so the menu can name the active pet instead of calling it "your pet".
+  const [pets, setPets] = useState([]);
 
   useEffect(() => {
     if (activePetId) localStorage.setItem(ACTIVE_PET_KEY, activePetId);
@@ -54,10 +56,11 @@ function App() {
     // land on their record. Only a first-timer needs the welcome question.
     setBooting(true);
     listPets()
-      .then((pets) => {
-        if (!pets.length) { setCurrentPage('landing'); return; }
-        const remembered = pets.find((p) => p.id === activePetId);
-        const target = remembered || pets[0];
+      .then((list) => {
+        setPets(list);
+        if (!list.length) { setCurrentPage('landing'); return; }
+        const remembered = list.find((p) => p.id === activePetId);
+        const target = remembered || list[0];
         setActivePetId(target.id);
         setPetTab('timeline');
         setCurrentPage('pet');
@@ -85,6 +88,9 @@ function App() {
   const navigateTo = (page) => {
     setCurrentPage(page);
     setMenuOpen(false);
+    if (page === 'pet' || page === 'pets') {
+      listPets().then(setPets).catch(() => {});
+    }
   };
 
   const openPet = (petId, tab = 'timeline') => {
@@ -168,11 +174,20 @@ function App() {
   const showMenu = currentPage !== 'hero';
 
   // Timeline and the latest analysis are no longer destinations — they are
-  // tabs inside the pet, so the nav lists the pet itself instead.
+  // tabs inside the pet, so the nav lists the pet itself.
+  //
+  // The named pet and the roster used to read as "Your pet" and "My pets" with
+  // the same icon, which is two ways of saying the same thing. Naming the
+  // animal removes the ambiguity entirely: "Miso" is somewhere you go, "All
+  // pets" is a list you manage.
+  const activePet = pets.find((p) => p.id === activePetId);
   const navItems = [
-    ...(activePetId ? [{ id: 'pet', label: 'Your pet', icon: PawPrint }] : []),
+    ...(activePetId
+      ? [{ id: 'pet', label: activePet?.name || 'Your pet', icon: PawPrint }]
+      : []),
     { id: 'landing', label: 'Add an observation', icon: Upload },
-    { id: 'pets', label: 'My pets', icon: PawPrint },
+    { id: 'pets', label: 'All pets', icon: List },
+    { divider: true },
     { id: 'about', label: 'Research', icon: Info },
     { id: 'biometrics', label: 'Biometrics', icon: Activity, badge: 'New' },
     { id: 'hero', label: 'About Etho', icon: Home },
@@ -214,7 +229,10 @@ function App() {
               }}
             >
               <div className="mt-16 space-y-1">
-                {navItems.map(({ id, label, icon: Icon, disabled, badge }) => (
+                {navItems.map(({ id, label, icon: Icon, disabled, badge, divider }) => (
+                  divider ? (
+                    <div key="div" className="h-px bg-white/15 my-3 mx-4" />
+                  ) : (
                   <button
                     key={id}
                     onClick={() => !disabled && navigateTo(id)}
@@ -238,6 +256,7 @@ function App() {
                       <span className="font-roboto text-xs text-white/30 ml-auto">No data</span>
                     )}
                   </button>
+                  )
                 ))}
               </div>
 

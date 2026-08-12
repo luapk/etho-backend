@@ -173,7 +173,7 @@ export default function PetProfile({ petId, onBack, onViewTimeline, onChanged,
             onClick={onBack}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl glass-card hover:bg-white/25 text-white font-roboto font-medium transition-colors mb-4"
           >
-            <ArrowLeft className="w-4 h-4" /> Your pets
+            <ArrowLeft className="w-4 h-4" /> All pets
           </button>
         )}
 

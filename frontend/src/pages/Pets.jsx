@@ -113,7 +113,7 @@ export default function Pets({ activePetId, onSelectPet, onViewTimeline, onOpenP
     <div className="min-h-screen px-4 py-8 md:px-6">
       <div className="max-w-3xl mx-auto">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-          <h1 className="font-roboto font-black text-3xl text-white mb-1">Your pets</h1>
+          <h1 className="font-roboto font-black text-3xl text-white mb-1">All pets</h1>
           <p className="font-roboto text-white/70 mb-6">
             Add a pet to build a record over time. Each pet is compared only
             against their own history.
