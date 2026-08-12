@@ -197,6 +197,10 @@ _MIGRATIONS = [
     ("analyses", "activity_level", "REAL"),     # measured motion energy
     ("analyses", "tremor_detected", "INTEGER"),
     ("analyses", "cough_like_count", "INTEGER"),
+    # Measured coat-colour histogram (JSON). Used only to ask the guardian
+    # whether a capture really belongs to this pet — never scored, never sent
+    # to Gemini. See identity_check.py.
+    ("analyses", "coat_sig", "TEXT"),
 ]
 
 
@@ -334,7 +338,8 @@ def log_analysis(pet_id, result: dict, media_type: str,
                  source_filename: str = None, file_size_bytes: int = None,
                  owner_id: str = None, context: str = None,
                  observed_at: str = None,
-                 capture_time_source: str = None) -> str:
+                 capture_time_source: str = None,
+                 coat_sig: list = None) -> str:
     """Extract indexed metrics from a pipeline result and persist the full
     record. Returns the new analysis id. pet_id may be None (unassigned).
     context is the guardian-declared capture context (e.g. weekly_baseline)."""
@@ -364,8 +369,9 @@ def log_analysis(pet_id, result: dict, media_type: str,
             "detection_coverage, vocal_event_count, pitch_mean_hz, purr_possible, "
             "pipeline_version, prompt_version, model_used, full_json, owner_id, context, "
             "quality_grade, resp_rate_bpm, resp_confidence, uploaded_at, "
-            "capture_time_source, activity_level, tremor_detected, cough_like_count) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "capture_time_source, activity_level, tremor_detected, cough_like_count, "
+            "coat_sig) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 analysis_id, pet_id, created_at, media_type, source_filename,
                 file_size_bytes,
@@ -395,6 +401,7 @@ def log_analysis(pet_id, result: dict, media_type: str,
                 (hs.get("activity_level") or {}).get("value"),
                 1 if (hs.get("tremor") or {}).get("detected") else (0 if hs else None),
                 (am.get("cough_like_events") or {}).get("count"),
+                json.dumps(coat_sig) if coat_sig else None,
             ),
         )
     return analysis_id
@@ -430,6 +437,22 @@ def get_full_results(pet_id: str, limit: int = 200) -> list:
     return [{"id": r["id"], "created_at": r["created_at"],
              "context": r["context"], "result": json.loads(r["full_json"])}
             for r in rows]
+
+
+def set_analysis_pet(analysis_id: str, pet_id: str) -> bool:
+    """Refile an observation under a different pet.
+
+    Moving rather than deleting matters: the capture itself was fine, it was
+    only filed against the wrong animal. Both pets' baselines are computed from
+    whatever they currently own, so the row simply stops counting toward one
+    and starts counting toward the other with no further bookkeeping.
+    """
+    if not analysis_id or not pet_id:
+        return False
+    with _lock, _connect() as conn:
+        cur = conn.execute("UPDATE analyses SET pet_id = ? WHERE id = ?",
+                           (pet_id, analysis_id))
+        return cur.rowcount > 0
 
 
 def set_observed_at(analysis_id: str, observed_at: str) -> bool:
@@ -477,6 +500,32 @@ def delete_analysis(analysis_id: str) -> bool:
     with _lock, _connect() as conn:
         cur = conn.execute("DELETE FROM analyses WHERE id = ?", (analysis_id,))
         return cur.rowcount > 0
+
+
+def coat_signatures(pet_id: str, limit: int = 40) -> list:
+    """This pet's stored coat signatures, most recent first.
+
+    Advisory data for identity_check — never raises, and an empty list simply
+    means the appearance comparison stays quiet.
+    """
+    if not pet_id:
+        return []
+    try:
+        with _lock, _connect() as conn:
+            rows = conn.execute(
+                "SELECT coat_sig FROM analyses WHERE pet_id = ? AND coat_sig IS NOT NULL "
+                "ORDER BY created_at DESC LIMIT ?", (pet_id, limit)).fetchall()
+        out = []
+        for r in rows:
+            try:
+                v = json.loads(r["coat_sig"])
+                if isinstance(v, list):
+                    out.append(v)
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return []
 
 
 def analysis_media_audit(limit: int = 100000) -> list:

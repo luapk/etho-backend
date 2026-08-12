@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Volume2, Eye, ChevronDown, ChevronUp, Download, AlertTriangle, MessageCircle, BookOpen, Subtitles, Lightbulb, Info, X, Sparkles, CalendarRange, Camera, Ruler, Wind, Activity as ActivityIcon, ChevronLeft } from 'lucide-react';
+import { Volume2, Eye, ChevronDown, ChevronUp, Download, AlertTriangle, MessageCircle, BookOpen, Subtitles, Lightbulb, Info, X, Sparkles, CalendarRange, Camera, Ruler, Wind, Activity as ActivityIcon, ChevronLeft, Check } from 'lucide-react';
+import { listPets, moveAnalysisToPet, friendlyError } from '../api';
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceArea } from 'recharts';
 import AudioWaveform from '../components/AudioWaveform';
 import Footer from '../components/Footer';
@@ -383,124 +384,222 @@ const MarkerInfoModal = ({ marker, onClose }) => {
   );
 };
 
-/* ── Pet captions: three presentations, on audition ────────────────────────
+/* ── The pet speech bubble ─────────────────────────────────────────────────
  *
- * The old caption was white text on a zone-tinted panel — white on amber is
- * roughly 2:1 contrast, which fails at any size and fails hardest on the
- * phone, in daylight, over moving footage, which is the entire use case. It
- * was also 14px and italic, and italic costs legibility at small sizes for
- * nothing in return.
+ * It is a SPEECH bubble, so it opens when the animal actually made a sound.
+ * A bubble floating over a silent cat on a four-second timer is the metaphor
+ * telling a small lie every few seconds, and this product's whole argument is
+ * that it doesn't do that.
  *
- * So the zone stops being the background colour. It is carried by a rail, a
- * border or a dot, and the text sits on a fixed high-contrast ground in every
- * style. Three genuinely different answers:
+ * So the bubble is driven by the MEASURED vocalization events out of the DSP —
+ * when a sound happened is measurement, not opinion — and the words come from
+ * Gemini's reading of what it meant. That is the same division of labour the
+ * audio timeline already uses. A POV line is matched to the nearest measured
+ * sound within a couple of seconds, because the model's timestamps are
+ * approximate and the DSP's are not; lines with no sound anywhere near them
+ * simply don't get a bubble.
  *
- *   card    white on near-black, zone as a colour rail. Familiar as a caption,
- *           safest over unpredictable footage, smallest footprint.
- *   bubble  near-black on white with a tail. Highest contrast of the three and
- *           it says "the animal is speaking" without a word of chrome — but a
- *           white panel glares on a dark clip and it covers more of the frame.
- *   below   under the video, never over it. Nothing is ever hidden behind the
- *           words — including the animal, which is what you came to look at —
- *           at the cost of splitting your attention off the picture.
- *
- * Whichever the guardian picks is remembered, because a caption preference is
- * about their eyes, not about this clip.
+ * Contrast: the old caption was 14px white italic on a zone-tinted panel, and
+ * white on amber is about 2:1 — it failed at any size and failed hardest on a
+ * phone, in daylight, over moving footage, which is the entire use case. The
+ * panel is now a fixed opaque blue whatever the zone, the type is bold, and
+ * the zone is carried by a dot instead of by the background.
  */
-const CAPTION_STYLES = [
-  { id: 'card',   label: 'Card' },
-  { id: 'bubble', label: 'Bubble' },
-  { id: 'below',  label: 'Below' },
-];
-const CAPTION_STYLE_KEY = 'etho.captionStyle';
+const BUBBLE_BG = '#1d4ed8';        // opaque, so nothing of the clip shows through
+const SPEECH_MATCH_WINDOW = 2.5;    // s — how far a POV line may sit from its sound
+const SPEECH_MIN_HOLD = 2.2;        // s — a bubble shorter than this can't be read
 
 // Mirrors _UNNAMED in video_annotator.py — the values a model returns when it
 // won't commit to a breed. None of them belong on screen as if they were one.
 const UNNAMED_BREEDS = new Set(['unknown', 'unclear', 'unidentified', 'n/a', 'na',
   'none', 'mixed', 'mixed breed', 'not determined', 'indeterminate']);
 
-function readCaptionStyle() {
-  try {
-    const saved = localStorage.getItem(CAPTION_STYLE_KEY);
-    if (CAPTION_STYLES.some((s) => s.id === saved)) return saved;
-  } catch { /* private mode */ }
-  return 'card';
+function tsToSec(ts) {
+  if (typeof ts === 'number') return ts;
+  const parts = String(ts ?? '').split(':').map(Number);
+  if (parts.length === 2 && parts.every((n) => !Number.isNaN(n))) return parts[0] * 60 + parts[1];
+  const n = parseFloat(ts);
+  return Number.isNaN(n) ? 0 : n;
 }
 
-const captionMotion = {
-  initial: { opacity: 0, y: 8 },
-  animate: { opacity: 1, y: 0 },
-  exit: { opacity: 0, y: -6 },
-  transition: { duration: 0.22, ease: 'easeOut' },
-};
+/** Every moment the animal can be shown speaking, with what they'd be saying.
+ *  Returns [] when they never vocalised — which is the honest answer, not a
+ *  failure, and the caller says so in words. */
+function buildSpeechMoments(analysisData) {
+  const lines = (analysisData?.interpret_lines || [])
+    .map((l, i) => ({ i, t: tsToSec(l.timestamp), text: getPetPovText(l), zone: l.zone }))
+    .filter((l) => l.text);
+  if (!lines.length) return [];
 
-/** Styles 'card' and 'bubble' — these overlay the video. */
-function CaptionOverlay({ subtitle, styleId }) {
-  const color = ZONE_CONFIG[subtitle.zone]?.color || '#e2e8f0';
+  const measured = (analysisData?._audio_metrics?.vocalization_events || [])
+    .map((e) => ({ t: Number(e.timestamp_sec) || 0, dur: Number(e.duration_sec) || 0 }));
+  // Only when the DSP couldn't run at all. Gemini hears that a sound happened
+  // but not precisely when, so its timestamps are the weaker source.
+  const identified = (analysisData?.audio_analysis?.vocalizations_detected || [])
+    .map((v) => ({ t: tsToSec(v.timestamp), dur: 0 }));
+  const sounds = measured.length ? measured : identified;
+  if (!sounds.length) return [];
 
-  // Both overlays centre with auto margins, not -translate-x-1/2:
-  // framer-motion writes its own inline transform for the entrance, which
-  // silently wins over a Tailwind translate class and leaves the caption
-  // hanging off the right edge of the frame.
-  if (styleId === 'bubble') {
+  const spoken = new Set();
+  const out = [];
+  for (const s of sounds) {
+    let best = null;
+    let bestGap = Infinity;
+    for (const l of lines) {
+      if (spoken.has(l.i)) continue;          // one line per sound, no echoes
+      const gap = Math.abs(l.t - s.t);
+      if (gap <= SPEECH_MATCH_WINDOW && gap < bestGap) { best = l; bestGap = gap; }
+    }
+    if (!best) continue;
+    spoken.add(best.i);
+    out.push({
+      from: s.t,
+      to: s.t + Math.max(s.dur, SPEECH_MIN_HOLD),
+      text: best.text,
+      zone: best.zone || getBehaviorZone(best.text),
+      key: `${s.t.toFixed(2)}-${best.i}`,
+    });
+  }
+  return out.sort((a, b) => a.from - b.from);
+}
+
+/* ── "Is this the same animal?" ────────────────────────────────────────────
+ *
+ * One misfiled clip puts a stranger's scores into a pet's baseline, and every
+ * deviation, slope and red flag in this product is measured against that
+ * baseline. So the backend screens each upload against the pet it was filed
+ * under and, when something doesn't line up, says so here.
+ *
+ * It is a question, never a verdict — the analysis ran, the record was kept,
+ * and the guardian is the only one who actually knows which animal is on
+ * screen. It comes with the fix attached: moving the capture to the right pet
+ * recomputes both baselines, which is why moving beats deleting and
+ * re-uploading.
+ */
+function IdentityNotice({ check, analysisId }) {
+  const [pets, setPets] = useState(null);
+  const [picking, setPicking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [moved, setMoved] = useState(null);
+  const [failed, setFailed] = useState(null);
+
+  const openPicker = () => {
+    setPicking(true);
+    if (!pets) listPets().then(setPets).catch(() => setPets([]));
+  };
+
+  const move = async (pet) => {
+    setBusy(true);
+    setFailed(null);
+    try {
+      await moveAnalysisToPet(analysisId, pet.id);
+      setMoved(pet.name);
+    } catch (e) {
+      setFailed(friendlyError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const hard = check.status === 'species_mismatch';
+
+  if (moved) {
     return (
-      <motion.div key={subtitle.key} {...captionMotion}
-        className="absolute bottom-16 inset-x-0 mx-auto w-[86%] max-w-sm pointer-events-none">
-        <div className="relative rounded-2xl bg-white px-4 py-3 shadow-[0_10px_28px_rgba(0,0,0,0.5)]">
-          <div className="flex items-start gap-2.5">
-            <span className="mt-[7px] w-2.5 h-2.5 rounded-full flex-none"
-                  style={{ backgroundColor: color }} />
-            <p className="font-roboto text-slate-900 text-[15px] leading-[1.35] font-medium">
-              {subtitle.text}
-            </p>
-          </div>
-          {/* Tail, so it reads as speech rather than as a system message. */}
-          <span className="absolute -bottom-[7px] left-7 w-3.5 h-3.5 bg-white rotate-45 rounded-[2px]" />
-        </div>
-      </motion.div>
+      <div className="glass-card rounded-2xl p-4 border-2 border-emerald-400/45 flex gap-3">
+        <Check className="w-5 h-5 text-emerald-300 flex-none mt-0.5" />
+        <p className="font-roboto text-white/90 text-sm">
+          Moved to {moved}. Both pets' baselines have been worked out again
+          without it and with it.
+        </p>
+      </div>
     );
   }
 
   return (
-    <motion.div key={subtitle.key} {...captionMotion}
-      className="absolute bottom-14 inset-x-0 mx-auto w-[88%] max-w-md pointer-events-none">
-      <div className="flex items-stretch rounded-xl overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,0.45)]"
-           style={{ backgroundColor: 'rgba(9,12,20,0.9)' }}>
-        <span className="w-1.5 flex-none" style={{ backgroundColor: color }} />
-        <p className="px-3.5 py-2.5 font-roboto text-white text-[15px] leading-[1.35] font-medium">
-          {subtitle.text}
-        </p>
+    <div className={`glass-card rounded-2xl p-4 border-2 ${
+      hard ? 'border-amber-400/60' : 'border-white/30'}`}>
+      <div className="flex gap-3">
+        <AlertTriangle className={`w-5 h-5 flex-none mt-0.5 ${
+          hard ? 'text-amber-300' : 'text-white/55'}`} />
+        <div className="flex-1">
+          <p className="font-roboto font-bold text-white text-sm">{check.headline}</p>
+          <p className="font-roboto text-white/70 text-sm mt-1">{check.detail}</p>
+
+          {failed && (
+            <p className="font-roboto text-amber-200 text-xs mt-2">{failed}</p>
+          )}
+
+          {!picking ? (
+            <button
+              onClick={openPicker}
+              className="mt-3 px-4 py-2 rounded-xl bg-white/20 hover:bg-white/30 text-white font-roboto text-sm font-bold transition-colors"
+            >
+              Move to another pet
+            </button>
+          ) : (
+            <div className="mt-3">
+              {pets === null ? (
+                <p className="font-roboto text-white/50 text-xs">Loading your pets…</p>
+              ) : pets.length < 2 ? (
+                <p className="font-roboto text-white/50 text-xs">
+                  There's nowhere else to move it — you've only got one pet on record.
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {pets.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => move(p)}
+                      disabled={busy}
+                      className="px-3 py-2 rounded-xl bg-white/15 hover:bg-white/25 disabled:opacity-50 text-white/90 font-roboto text-sm transition-colors"
+                    >
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                onClick={() => setPicking(false)}
+                className="mt-2 font-roboto text-white/45 hover:text-white/80 text-xs transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
       </div>
-    </motion.div>
+    </div>
   );
 }
 
-/** Style 'below' — its own strip under the frame. Fixed height whether or not
- *  a line is showing, so the page doesn't jump every few seconds. */
-function CaptionStrip({ subtitle, playing }) {
-  const color = subtitle ? (ZONE_CONFIG[subtitle.zone]?.color || '#e2e8f0') : 'rgba(255,255,255,0.2)';
-  const mmss = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+function PetSpeechBubble({ subtitle }) {
+  const color = ZONE_CONFIG[subtitle.zone]?.color || '#e2e8f0';
   return (
-    <div className="px-4 py-3 border-t border-white/10 min-h-[68px] flex items-center gap-3">
-      <span className="w-1 self-stretch rounded-full flex-none" style={{ backgroundColor: color }} />
-      <AnimatePresence mode="wait">
-        {subtitle ? (
-          <motion.p key={subtitle.key} {...captionMotion}
-                    className="font-roboto text-white text-[15px] leading-[1.35] font-medium flex-1">
+    // Centred with auto margins, not -translate-x-1/2: framer-motion writes its
+    // own inline transform for the entrance, which silently beats a Tailwind
+    // translate class and leaves the bubble hanging off the right of the frame.
+    <motion.div
+      key={subtitle.key}
+      initial={{ opacity: 0, y: 10, scale: 0.96 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -6, scale: 0.98 }}
+      transition={{ duration: 0.22, ease: 'easeOut' }}
+      className="absolute bottom-16 inset-x-0 mx-auto w-[86%] max-w-sm pointer-events-none"
+    >
+      <div className="relative rounded-2xl px-4 py-3 shadow-[0_10px_28px_rgba(0,0,0,0.55)]"
+           style={{ backgroundColor: BUBBLE_BG }}>
+        <div className="flex items-start gap-2.5">
+          <span className="mt-[6px] w-2.5 h-2.5 rounded-full flex-none ring-2 ring-white/70"
+                style={{ backgroundColor: color }} />
+          <p className="font-roboto text-white text-[16px] leading-[1.3] font-bold">
             {subtitle.text}
-          </motion.p>
-        ) : (
-          <p key="idle" className="font-roboto text-white/35 text-sm flex-1">
-            {playing ? 'Nothing to read here.' : 'Play the clip to read along.'}
           </p>
-        )}
-      </AnimatePresence>
-      {subtitle && (
-        <span className="font-roboto text-white/40 text-[11px] tabular-nums flex-none">
-          {mmss(subtitle.t)}
-        </span>
-      )}
-    </div>
+        </div>
+        {/* Tail, so it reads as speech rather than as a system message. */}
+        <span className="absolute -bottom-[7px] left-7 w-3.5 h-3.5 rotate-45 rounded-[2px]"
+              style={{ backgroundColor: BUBBLE_BG }} />
+      </div>
+    </motion.div>
   );
 }
 
@@ -511,16 +610,13 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
-  const [captionStyle, setCaptionStyle] = useState(readCaptionStyle);
   const [currentSubtitle, setCurrentSubtitle] = useState(null);
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
   const [showDistressInfo, setShowDistressInfo] = useState(false);
   const [selectedMarker, setSelectedMarker] = useState(null);
   const videoRef = useRef(null);
 
-  useEffect(() => {
-    try { localStorage.setItem(CAPTION_STYLE_KEY, captionStyle); } catch { /* private mode */ }
-  }, [captionStyle]);
+  const speechMoments = useMemo(() => buildSpeechMoments(analysisData), [analysisData]);
 
   // Photos are analysed as a single moment: no playback, no track to scrub, no
   // audio, no sequence. Half this screen is built around a clip, and showing
@@ -550,41 +646,12 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
     return () => { v.removeEventListener('timeupdate', onTime); v.removeEventListener('durationchange', onDur); v.removeEventListener('play', onPlay); v.removeEventListener('pause', onPause); };
   }, []);
 
-  // Subtitle sync with Umwelt-based translations
+  // The bubble is open only while a measured sound is being spoken over.
   useEffect(() => {
-    if (!subtitlesEnabled || !analysisData?.interpret_lines) { 
-      setCurrentSubtitle(null); 
-      return; 
-    }
-    
-    const { species, video_context } = analysisData;
-    
-    for (let i = analysisData.interpret_lines.length - 1; i >= 0; i--) {
-      const line = analysisData.interpret_lines[i];
-      const parts = (line.timestamp || '0:00').split(':').map(Number);
-      const lineTime = parts.length === 2 ? parts[0] * 60 + parts[1] : parseFloat(line.timestamp) || 0;
-      
-      if (currentTime >= lineTime && currentTime < lineTime + 4) {
-        const zone = line.zone || getBehaviorZone(getPetPovText(line));
-        
-        // Use AI-generated interpretation directly - no client-side override
-        const petPovText = getPetPovText(line);
-        
-        const newSubtitle = {
-          text: petPovText,
-          zone,
-          t: lineTime,
-          key: `${lineTime}-${i}`
-        };
-
-        if (!currentSubtitle || currentSubtitle.key !== newSubtitle.key) {
-          setCurrentSubtitle(newSubtitle);
-        }
-        return;
-      }
-    }
-    setCurrentSubtitle(null);
-  }, [currentTime, subtitlesEnabled, analysisData]);
+    if (!subtitlesEnabled) { setCurrentSubtitle(null); return; }
+    const live = speechMoments.find((m) => currentTime >= m.from && currentTime < m.to);
+    setCurrentSubtitle((prev) => (prev?.key === live?.key ? prev : (live || null)));
+  }, [currentTime, subtitlesEnabled, speechMoments]);
 
   const handleMarkerClick = useCallback((t) => { if (videoRef.current) { videoRef.current.currentTime = t; videoRef.current.play(); } }, []);
 
@@ -833,6 +900,14 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
      underneath. On a fresh upload the running order is different — the score
      is the headline there — so both blocks are hoisted into variables and
      placed rather than duplicated. */
+  /* Only the two states that need the guardian. A pass and an "unverified"
+     are both fine and neither is worth a card on a page this long. */
+  const identityFlag =
+    analysisData.analysis_id &&
+    ['species_mismatch', 'appearance_outlier'].includes(analysisData.identity_check?.status)
+      ? analysisData.identity_check
+      : null;
+
   const mediaSection = (
     <>
         {/* Video with enhanced subtitles */}
@@ -858,15 +933,11 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
                   caption below it. The 'below' style renders outside this
                   container, so it is not one of the overlays. */}
               <AnimatePresence mode="wait">
-                {!isStill && subtitlesEnabled && currentSubtitle && captionStyle !== 'below' && (
-                  <CaptionOverlay subtitle={currentSubtitle} styleId={captionStyle} />
+                {!isStill && subtitlesEnabled && currentSubtitle && (
+                  <PetSpeechBubble subtitle={currentSubtitle} />
                 )}
               </AnimatePresence>
             </div>
-
-            {!isStill && subtitlesEnabled && captionStyle === 'below' && (
-              <CaptionStrip subtitle={currentSubtitle} playing={isPlaying} />
-            )}
             
             {/* Caption controls: on/off, then how they look.
                 The pill states its own state in words. It replaced a 44x24
@@ -899,28 +970,12 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
                 </span>
               </button>
 
-              {subtitlesEnabled && (
-                <div className="flex items-center gap-1 rounded-xl bg-white/10 p-1"
-                     role="group" aria-label="Caption style">
-                  {CAPTION_STYLES.map((s) => (
-                    <button
-                      key={s.id}
-                      onClick={() => setCaptionStyle(s.id)}
-                      aria-pressed={captionStyle === s.id}
-                      className={`tap-compact px-3 py-1.5 rounded-lg font-roboto text-xs font-bold transition-colors ${
-                        captionStyle === s.id
-                          ? 'bg-white/85 text-slate-900'
-                          : 'text-white/60 hover:text-white hover:bg-white/10'
-                      }`}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              <span className="font-roboto text-white/35 text-xs ml-auto hidden sm:block">
-                What they'd be saying, as the clip plays
+              {/* Why the bubble might never open. Silence is a normal result,
+                  and a feature that quietly does nothing reads as broken. */}
+              <span className="font-roboto text-white/40 text-xs flex-1 min-w-[12rem]">
+                {speechMoments.length
+                  ? `Opens on each of the ${speechMoments.length} sound${speechMoments.length === 1 ? '' : 's'} measured in this clip`
+                  : 'They didn’t make a sound in this clip, so the bubble stays shut'}
               </span>
             </div>
             ) : stillCaption ? (
@@ -1013,6 +1068,12 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
       )}
 
       <div className="max-w-5xl mx-auto px-6 pb-12 space-y-6">
+        {/* Above everything, on both layouts: if this might not be the right
+            animal, that changes how you read every number underneath it. */}
+        {identityFlag && (
+          <IdentityNotice check={identityFlag} analysisId={analysisData.analysis_id} />
+        )}
+
         {embedded && mediaSection}
         {embedded && insightSection}
 

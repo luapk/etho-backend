@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { ArrowLeft, Camera, Check, Trash2, PawPrint, AlertTriangle,
-         CalendarRange, Loader } from 'lucide-react';
+         CalendarRange, Loader, Image as ImageIcon } from 'lucide-react';
 import { getPet, updatePet, uploadPetAvatar, deletePetAvatar, fetchPetAvatar,
-         getBreedContext, friendlyError } from '../api';
+         uploadPetWallpaper, deletePetWallpaper, fetchPetWallpaper,
+         wallpaperFromAvatar, getBreedContext, friendlyError } from '../api';
 import AvatarCropper from '../components/AvatarCropper';
 
 /*
@@ -79,6 +80,8 @@ export default function PetProfile({ petId, onBack, onViewTimeline, onChanged,
   const [form, setForm] = useState(null);
   const [avatarUrl, setAvatarUrl] = useState(null);
   const [avatarBusy, setAvatarBusy] = useState(false);
+  const [wallpaperUrl, setWallpaperUrl] = useState(null);
+  const [wallBusy, setWallBusy] = useState(false);
   const [pendingPhoto, setPendingPhoto] = useState(null);   // awaiting framing
   const [breedCtx, setBreedCtx] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -86,6 +89,8 @@ export default function PetProfile({ petId, onBack, onViewTimeline, onChanged,
   const [error, setError] = useState(null);
   const fileRef = useRef(null);
   const urlRef = useRef(null);
+  const wallRef = useRef(null);
+  const wallUrlRef = useRef(null);
 
   const setAvatar = (url) => {
     if (urlRef.current) URL.revokeObjectURL(urlRef.current);
@@ -111,8 +116,12 @@ export default function PetProfile({ petId, onBack, onViewTimeline, onChanged,
       })
       .catch((e) => setError(friendlyError(e)));
     loadAvatar();
+    loadWallpaper();
     getBreedContext(petId).then(setBreedCtx).catch(() => {});
-    return () => { if (urlRef.current) URL.revokeObjectURL(urlRef.current); };
+    return () => {
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      if (wallUrlRef.current) URL.revokeObjectURL(wallUrlRef.current);
+    };
   }, [petId]);
 
   const pickAvatar = (e) => {
@@ -138,6 +147,44 @@ export default function PetProfile({ petId, onBack, onViewTimeline, onChanged,
       setAvatarBusy(false);
     }
   };
+
+  const setWallpaper = (url) => {
+    if (wallUrlRef.current) URL.revokeObjectURL(wallUrlRef.current);
+    wallUrlRef.current = url;
+    setWallpaperUrl(url);
+  };
+
+  const loadWallpaper = () => fetchPetWallpaper(petId).then(setWallpaper);
+
+  const runWallpaper = async (fn) => {
+    setWallBusy(true);
+    setError(null);
+    try {
+      await fn();
+      await loadWallpaper();
+      onChanged?.();
+    } catch (err) {
+      setError(friendlyError(err));
+    } finally {
+      setWallBusy(false);
+    }
+  };
+
+  const pickWallpaper = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    // No cropper here, unlike the avatar: a background is displayed at every
+    // shape a phone can be, so the browser has to do the cropping at render
+    // time anyway and a fixed crop would only throw away the margin it needs.
+    runWallpaper(() => uploadPetWallpaper(petId, file));
+  };
+
+  const useAvatarAsWallpaper = () => runWallpaper(() => wallpaperFromAvatar(petId));
+  const removeWallpaper = () => runWallpaper(async () => {
+    await deletePetWallpaper(petId);
+    setWallpaper(null);
+  });
 
   const removeAvatar = async () => {
     setAvatarBusy(true);
@@ -435,6 +482,69 @@ export default function PetProfile({ petId, onBack, onViewTimeline, onChanged,
             {saving ? 'Saving…' : saved ? 'Saved' : 'Save changes'}
           </button>
         </form>
+
+        {/* Background photo.
+            Offered from the camera roll or from the profile picture, and
+            deliberately NOT from the stored captures: everything the library
+            keeps is annotated, so a "photo of Louis" from the timeline would
+            arrive with a green detection box and a distress meter burned into
+            it. That is a screenshot of the tool, not a picture of the animal. */}
+        <div className="glass-card rounded-2xl p-5 mt-4">
+          <h2 className="font-roboto font-bold text-white mb-1">Background photo</h2>
+          <p className="font-roboto text-white/50 text-sm mb-4">
+            Fills the screen behind {form.name || 'them'}'s pages. Dimmed so the
+            readings stay readable on top of it.
+          </p>
+
+          <div className="rounded-xl overflow-hidden bg-black/25 border border-white/15 aspect-[16/10] flex items-center justify-center mb-3">
+            {wallpaperUrl ? (
+              <img src={wallpaperUrl} alt="" className="w-full h-full object-cover" />
+            ) : (
+              <div className="text-center px-6">
+                <ImageIcon className="w-7 h-7 text-white/25 mx-auto mb-2" />
+                <p className="font-roboto text-white/40 text-xs">No background set</p>
+              </div>
+            )}
+          </div>
+
+          <input
+            ref={wallRef}
+            type="file"
+            accept="image/*"
+            onChange={pickWallpaper}
+            className="hidden"
+          />
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => wallRef.current?.click()}
+              disabled={wallBusy}
+              className="px-4 py-2.5 rounded-xl bg-white/20 hover:bg-white/30 disabled:opacity-50 text-white font-roboto text-sm font-bold transition-colors"
+            >
+              {wallBusy ? 'Saving…' : wallpaperUrl ? 'Change photo' : 'Choose a photo'}
+            </button>
+            {avatarUrl && (
+              <button
+                type="button"
+                onClick={useAvatarAsWallpaper}
+                disabled={wallBusy}
+                className="px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-50 text-white/80 font-roboto text-sm transition-colors"
+              >
+                Use profile picture
+              </button>
+            )}
+            {wallpaperUrl && (
+              <button
+                type="button"
+                onClick={removeWallpaper}
+                disabled={wallBusy}
+                className="flex items-center gap-1 px-3 py-2.5 rounded-xl text-white/45 hover:text-white/85 font-roboto text-sm transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Remove
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

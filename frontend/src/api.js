@@ -62,6 +62,22 @@ export function uploadPetAvatar(id, file) {
 export const deletePetAvatar = (id) =>
   client.delete(`/api/pets/${id}/avatar`).then((r) => r.data);
 
+export function uploadPetWallpaper(id, file) {
+  const form = new FormData();
+  form.append('file', file);
+  return client
+    .post(`/api/pets/${id}/wallpaper`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then((r) => r.data);
+}
+
+export const wallpaperFromAvatar = (id) =>
+  client.post(`/api/pets/${id}/wallpaper/from-avatar`).then((r) => r.data);
+
+export const deletePetWallpaper = (id) =>
+  client.delete(`/api/pets/${id}/wallpaper`).then((r) => r.data);
+
 // ── Longitudinal record ──────────────────────────────────────────────────────
 
 export const getTimeline = (id) =>
@@ -90,6 +106,13 @@ export const getAnalysis = (id) =>
  *  is not the same evidence as one read from the file, and the record says so. */
 export const setAnalysisDate = (id, observedAt) =>
   client.patch(`/api/analyses/${id}`, { observed_at: observedAt })
+        .then((r) => r.data.analysis);
+
+/** Refile an observation under a different pet.
+ *  Both pets' baselines are recomputed from what they now own, so a misfiled
+ *  capture stops counting toward one and starts counting toward the other. */
+export const moveAnalysisToPet = (id, petId) =>
+  client.patch(`/api/analyses/${id}`, { pet_id: petId })
         .then((r) => r.data.analysis);
 
 /** Permanently remove an observation, its poster and its clip.
@@ -202,6 +225,10 @@ const asObjectUrl = (path) =>
 /** A pet's profile picture. null when they haven't got one, or it failed. */
 export const fetchPetAvatar = (petId) =>
   asObjectUrl(`/api/pets/${petId}/avatar`).catch(() => null);
+
+/** The pet's chosen background photo. null when they haven't set one. */
+export const fetchPetWallpaper = (petId) =>
+  asObjectUrl(`/api/pets/${petId}/wallpaper`).catch(() => null);
 
 /** Timeline thumbnail. null when none was stored, or it failed. */
 export const fetchPoster = (analysisId) =>

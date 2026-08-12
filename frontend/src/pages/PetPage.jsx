@@ -35,7 +35,7 @@ const fmtShort = (iso) =>
 
 export default function PetPage({
   petId, initialTab = 'timeline', openAnalysisId = null,
-  onChangePet, onAddObservation, onOpenVetReport, onManagePets,
+  onChangePet, onAddObservation, onOpenVetReport, onManagePets, onPetChanged,
 }) {
   const [tab, setTab] = useState(initialTab);
   const [detail, setDetail] = useState(openAnalysisId ? { id: openAnalysisId } : null);
@@ -274,7 +274,7 @@ export default function PetPage({
           onOpenVetReport={onOpenVetReport}
           onUpload={onAddObservation}
           onOpenAnalysis={openObservation}
-          onChanged={() => setReloadKey((k) => k + 1)}
+          onChanged={() => { setReloadKey((k) => k + 1); onPetChanged?.(); }}
         />
       )}
 
@@ -283,7 +283,7 @@ export default function PetPage({
           petId={petId}
           embedded
           onViewTimeline={() => setTab('timeline')}
-          onChanged={() => setReloadKey((k) => k + 1)}
+          onChanged={() => { setReloadKey((k) => k + 1); onPetChanged?.(); }}
         />
       )}
 

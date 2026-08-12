@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Menu, X, Home, Info, Activity, Lock, PawPrint, Upload, List } from 'lucide-react';
-import { listPets } from './api';
+import { listPets, fetchPetWallpaper } from './api';
 import Hero from './pages/Hero';
 import Landing from './pages/Landing';
 import Dashboard from './pages/Dashboard';
@@ -13,6 +13,64 @@ import PetPage from './pages/PetPage';
 
 const PASSWORD = 'etho2024';
 const ACTIVE_PET_KEY = 'etho.activePetId';
+
+/* The pet's own photo, behind everything.
+ *
+ * Fixed rather than scrolled, so it behaves like a wallpaper and not like a
+ * header image that slides away. Fetched as a blob because the endpoint is
+ * owner-scoped and an <img src> can't carry the API key — putting it in the
+ * URL would land it in every server log.
+ *
+ * The scrim is the whole reason this is safe to ship. Every card in this app
+ * is translucent glass, and glass over an arbitrary photo means white type
+ * landing on a white cat. So the photo sits under a dark wash plus a trace of
+ * the original gradient: the pet is clearly recognisable, and contrast for the
+ * readings on top of it stays roughly where it was. A background that made the
+ * numbers harder to read would be a bad trade — this is a health record.
+ */
+function PetWallpaper({ petId, enabled }) {
+  const [url, setUrl] = useState(null);
+
+  useEffect(() => {
+    let dead = false;
+    let objectUrl = null;
+    if (!petId || !enabled) { setUrl(null); return undefined; }
+    fetchPetWallpaper(petId).then((u) => {
+      if (dead) { if (u) URL.revokeObjectURL(u); return; }
+      objectUrl = u;
+      setUrl(u);
+    });
+    return () => {
+      dead = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      setUrl(null);
+    };
+  }, [petId, enabled]);
+
+  if (!url) return null;
+  return (
+    <div className="fixed inset-0 -z-10 pointer-events-none" aria-hidden="true">
+      {/* A light blur, then the wash. The blur is not decoration: it removes
+          the high-frequency detail that a photo puts directly behind small
+          white type — whiskers and grass edges are what actually break
+          legibility, more than overall brightness — while leaving the animal
+          perfectly recognisable as shape and colour. Blurring lets the wash be
+          lighter than it would otherwise have to be, so more of the pet shows
+          through, not less. */}
+      <img src={url} alt=""
+           className="w-full h-full object-cover"
+           style={{ filter: 'blur(6px) saturate(1.05)', transform: 'scale(1.06)' }} />
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            'linear-gradient(180deg, rgba(3,10,26,0.66) 0%, rgba(3,10,26,0.50) 45%, rgba(3,10,26,0.70) 100%),' +
+            'linear-gradient(135deg, rgba(56,189,248,0.18) 0%, rgba(59,130,246,0.18) 50%, rgba(6,182,212,0.18) 100%)',
+        }}
+      />
+    </div>
+  );
+}
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -201,6 +259,7 @@ function App() {
 
   return (
     <div className="relative min-h-screen font-roboto">
+      <PetWallpaper petId={activePetId} enabled={showMenu && !!activePet?.has_wallpaper} />
       {/* The logo sits on every screen except the hero, which is already one
           big piece of branding. Left-aligned and small: it identifies the app
           without competing with the pet's name underneath it. */}
@@ -322,6 +381,10 @@ function App() {
             onAddObservation={() => navigateTo('landing')}
             onOpenVetReport={openVetReport}
             onManagePets={() => navigateTo('pets')}
+            /* The wallpaper flag is read off the pet list, so a profile edit
+               has to refresh it — otherwise a newly chosen background doesn't
+               appear until the next navigation. */
+            onPetChanged={() => listPets().then(setPets).catch(() => {})}
           />
         )}
 

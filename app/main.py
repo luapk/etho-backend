@@ -27,7 +27,7 @@ from .services.health_signals import HealthSignalService
 from .services import media_metadata
 from .services import (
     pet_store, vet_report, capture_quality, breed_reference, model_selector,
-    media_store, breed_health,
+    media_store, breed_health, identity_check,
 )
 from .services.video_annotator import (
     annotate_video,
@@ -217,11 +217,44 @@ def _log_startup_banner():
     print("=" * 62 + "\n")
 
 
+def _identity_screen(pet_id, result: dict, pose_frames: list,
+                     source_path: str, is_video: bool):
+    """Ask whether this upload is really the pet it's being filed under.
+
+    Runs AFTER Gemini, deliberately and structurally: nothing computed here can
+    reach Pass 1 or Pass 2. Telling the model an animal might be the wrong one
+    would invite it to go and find differences, and Pass 1 is a ground-truth
+    lock Pass 2 is obliged to honour — the same reason breed predispositions
+    are kept out of the prompt.
+
+    It never blocks, never reassigns and never touches a score. It attaches a
+    question for the guardian and returns the coat signature so this capture
+    becomes part of the comparison for the next one.
+    """
+    if not pet_id or not pose_frames:
+        return None
+    try:
+        pet = pet_store.get_pet(pet_id)
+        signature = identity_check.coat_signature(source_path, pose_frames, is_video)
+        # Fetched before this analysis is logged, so a capture is never
+        # compared against itself.
+        priors = pet_store.coat_signatures(pet_id)
+        block = identity_check.check(
+            pet, signature, identity_check.measured_species(pose_frames), priors)
+        result["identity_check"] = block
+        print(f"  → Identity screen: {block['status']} "
+              f"(vs {block['compared_with']} previous)")
+        return signature
+    except Exception as e:
+        print(f"  ⚠ Identity screen skipped: {e}")
+        return None
+
+
 def _log_to_history(pet_id, result: dict, media_type: str,
                     filename: str, size_bytes: int,
                     owner_id: str = None, context: str = None,
                     observed_at: str = None, capture_time_source: str = None,
-                    source_path: str = None):
+                    source_path: str = None, coat_sig: list = None):
     """Persist a successful analysis to the pet's longitudinal record.
     pet_id may be None — the record is stored unassigned (but still
     owner-scoped). Pet ownership is validated by the endpoint BEFORE the
@@ -236,6 +269,7 @@ def _log_to_history(pet_id, result: dict, media_type: str,
             source_filename=filename, file_size_bytes=size_bytes,
             owner_id=owner_id, context=context,
             observed_at=observed_at, capture_time_source=capture_time_source,
+            coat_sig=coat_sig,
         )
         result["analysis_id"] = analysis_id
         result["pet_id"] = pet_id
@@ -452,11 +486,12 @@ async def upload_and_analyze(
         )
         cap = _capture_info(temp_path, file.filename, "video")
         result["capture_time"] = cap
+        coat_sig = _identity_screen(pet_id, result, pose_frames, temp_path, is_video=True)
         _log_to_history(pet_id, result, "video", file.filename, file_size,
                         owner_id=auth["owner_id"], context=context,
                         observed_at=cap["captured_at"],
                         capture_time_source=cap["source"],
-                        source_path=temp_path)
+                        source_path=temp_path, coat_sig=coat_sig)
 
         return {"success": True, "data": result}
 
@@ -542,11 +577,12 @@ async def upload_and_analyze_image(
         )
         cap = _capture_info(temp_path, file.filename, "image")
         result["capture_time"] = cap
+        coat_sig = _identity_screen(pet_id, result, pose_frames, temp_path, is_video=False)
         _log_to_history(pet_id, result, "image", file.filename, file_size,
                         owner_id=auth["owner_id"], context=context,
                         observed_at=cap["captured_at"],
                         capture_time_source=cap["source"],
-                        source_path=temp_path)
+                        source_path=temp_path, coat_sig=coat_sig)
 
         return {"success": True, "data": result}
 
@@ -675,11 +711,15 @@ def _process_batch(batch_id: str, staged: list, pet_id, owner_id, context, annot
             )
             cap = _capture_info(path, filename, media_type)
             result["capture_time"] = cap
+            # A bulk import is exactly where a stranger's animal slips in, so
+            # the screen runs on every item rather than only on single uploads.
+            coat_sig = _identity_screen(pet_id, result, pose_frames, path,
+                                        is_video=(media_type == "video"))
             _log_to_history(pet_id, result, media_type, filename, size,
                             owner_id=owner_id, context=context,
                             observed_at=cap["captured_at"],
                             capture_time_source=cap["source"],
-                            source_path=path)
+                            source_path=path, coat_sig=coat_sig)
             item.update(
                 status="done",
                 analysis_id=result.get("analysis_id"),
@@ -812,6 +852,7 @@ async def get_pets(auth: dict = Depends(get_auth)):
     # posters are: the file is the truth and a column would drift from it.
     for p in pets:
         p["has_avatar"] = media_store.has_avatar(p["id"])
+        p["has_wallpaper"] = media_store.has_wallpaper(p["id"])
     return {"success": True, "pets": pets}
 
 
@@ -819,6 +860,7 @@ async def get_pets(auth: dict = Depends(get_auth)):
 async def get_pet(pet_id: str, auth: dict = Depends(get_auth)):
     pet = _authorized_pet(pet_id, auth)
     pet["has_avatar"] = media_store.has_avatar(pet_id)
+    pet["has_wallpaper"] = media_store.has_wallpaper(pet_id)
     return {
         "success": True,
         "pet": pet,
@@ -945,6 +987,67 @@ async def delete_pet_avatar(pet_id: str, auth: dict = Depends(get_auth)):
     return {"success": True, "removed": media_store.delete_avatar(pet_id)}
 
 
+@app.post("/api/pets/{pet_id}/wallpaper")
+async def upload_pet_wallpaper(pet_id: str, file: UploadFile = File(...),
+                               auth: dict = Depends(get_auth)):
+    """Set the full-screen background shown while this pet is open."""
+    _authorized_pet(pet_id, auth)
+    if (file.content_type or "") not in {"image/jpeg", "image/png", "image/webp"}:
+        raise HTTPException(status_code=400,
+                            detail="Backgrounds must be a JPEG, PNG or WebP image.")
+    file.file.seek(0, 2)
+    size = file.file.tell()
+    file.file.seek(0)
+    if size > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="That image is too large (max 20MB).")
+
+    tmp_path = None
+    try:
+        ext = os.path.splitext(file.filename or "wallpaper.jpg")[1] or ".jpg"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp_path = tmp.name
+            shutil.copyfileobj(file.file, tmp)
+        if not media_store.save_wallpaper(pet_id, tmp_path):
+            raise HTTPException(status_code=400,
+                                detail="That image couldn't be read. Try a different photo.")
+        return {"success": True, "has_wallpaper": True}
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+@app.post("/api/pets/{pet_id}/wallpaper/from-avatar")
+async def wallpaper_from_avatar(pet_id: str, auth: dict = Depends(get_auth)):
+    """Reuse the profile picture as the background, so a guardian who already
+    framed one good photo doesn't have to go and find it again."""
+    _authorized_pet(pet_id, auth)
+    src = media_store.avatar_path(pet_id)
+    if not src:
+        raise HTTPException(status_code=404, detail="No profile picture to use")
+    if not media_store.save_wallpaper(pet_id, src):
+        raise HTTPException(status_code=400, detail="That picture couldn't be used.")
+    return {"success": True, "has_wallpaper": True}
+
+
+@app.get("/api/pets/{pet_id}/wallpaper")
+async def get_pet_wallpaper(pet_id: str, auth: dict = Depends(get_auth)):
+    """A pet's background photo. 404 when they haven't set one."""
+    _authorized_pet(pet_id, auth)
+    path = media_store.wallpaper_path(pet_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="No background set")
+    return FileResponse(path, media_type="image/jpeg")
+
+
+@app.delete("/api/pets/{pet_id}/wallpaper")
+async def delete_pet_wallpaper(pet_id: str, auth: dict = Depends(get_auth)):
+    _authorized_pet(pet_id, auth)
+    return {"success": True, "removed": media_store.delete_wallpaper(pet_id)}
+
+
 @app.get("/api/pets/{pet_id}/capture-plan")
 async def get_capture_plan(pet_id: str, auth: dict = Depends(get_auth)):
     """What is worth filming for this pet, and why.
@@ -1003,7 +1106,8 @@ async def get_analysis(analysis_id: str, auth: dict = Depends(get_auth)):
 
 
 class AnalysisUpdate(BaseModel):
-    observed_at: str        # ISO date (YYYY-MM-DD) or full ISO-8601 timestamp
+    observed_at: str | None = None   # ISO date (YYYY-MM-DD) or full ISO-8601 timestamp
+    pet_id: str | None = None        # refile this observation under another pet
 
 
 @app.patch("/api/analyses/{analysis_id}")
@@ -1020,6 +1124,19 @@ async def update_analysis(analysis_id: str, patch: AnalysisUpdate,
     but they are different kinds of evidence and the vet report says which.
     """
     _authorized_analysis(analysis_id, auth)
+
+    # Refiling. The identity screen can only ask the question; the guardian is
+    # the one who knows the answer, so the flag has to come with a way to act
+    # on it. Both baselines are recomputed from what each pet now owns, which
+    # is the whole point of moving it rather than deleting and re-uploading.
+    if patch.pet_id:
+        _authorized_pet(patch.pet_id, auth)      # 404 for someone else's pet
+        pet_store.set_analysis_pet(analysis_id, patch.pet_id)
+        if not patch.observed_at:
+            return {"success": True, "analysis": pet_store.get_analysis(analysis_id)}
+
+    if not patch.observed_at:
+        raise HTTPException(status_code=400, detail="Nothing to change.")
 
     raw = (patch.observed_at or "").strip()
     try:

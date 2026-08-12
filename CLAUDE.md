@@ -48,6 +48,10 @@ PYTHONPATH=. python scripts/seed_demo.py     # writes to $DATA_DIR (default ./da
 PYTHONPATH=. python scripts/check_models.py                        # what's available + recommendation
 #   → set GEMINI_MODEL=<recommended>
 PYTHONPATH=. python scripts/repeatability_study.py --media-dir ./clips   # confirm score consistency
+
+# Before switching on the coat-colour half of the identity screen
+PYTHONPATH=. python scripts/validate_identity.py   # do within-pet and between-pet distances separate?
+#   → only if they do: set IDENTITY_APPEARANCE=1
 ```
 
 **Choosing the analysis model** (`model_selector.py`): ranking is pure/testable — non-video families (embedding, imagen, veo, gemma, tts, native-audio) are excluded, previews excluded unless asked for, then tier preference → newest version → stable over preview → bare alias over dated snapshot. `GEMINI_MODEL` is **pinned by default on purpose**: a longitudinal record needs a stable instrument, so upgrades should be deliberate and followed by the repeatability study. `GEMINI_MODEL=auto` resolves once at import (never per-request), logs what it picked, and falls back to the pinned default if discovery fails. `GET /api/models/available` (admin) does the same discovery from a deployed instance but never switches anything itself.
@@ -79,6 +83,10 @@ PATCH /api/pets/{id}                    update profile (the Pet Profile screen)
 POST  /api/pets/{id}/avatar             set a profile picture (centre-cropped square)
 GET   /api/pets/{id}/avatar             fetch it (owner-scoped)
 DELETE /api/pets/{id}/avatar            remove it
+POST  /api/pets/{id}/wallpaper          set the full-screen background photo
+POST  /api/pets/{id}/wallpaper/from-avatar   reuse the profile picture as the background
+GET   /api/pets/{id}/wallpaper          fetch it (owner-scoped)
+DELETE /api/pets/{id}/wallpaper         remove it
 POST  /api/video/upload?pet_id=...      analysis is logged to that pet (pet_id optional everywhere)
 GET   /api/pets/{id}/history            chronological indexed metrics (for timeline/chart UI)
 GET   /api/pets/{id}/trends             baseline ± SD, latest deviation, slope (pts/week), red flags
@@ -86,6 +94,7 @@ GET   /api/pets/{id}/capture-plan       what's worth filming next, and why (bree
 GET   /api/pets/{id}/breed-context      population predispositions for the CONFIRMED breed
 GET   /api/analyses/{id}                full stored raw result (provenance) + has_poster/has_media
 PATCH /api/analyses/{id}                correct the observation date (stamped capture_time_source=manual)
+                                        and/or refile it under another pet (pet_id)
 DELETE /api/analyses/{id}               remove an observation, its poster and its clip (permanent)
 GET   /api/analyses/{id}/poster         timeline thumbnail (JPEG, owner-scoped)
 GET   /api/analyses/{id}/media          stored annotated clip/photo (404 once evicted)
@@ -121,6 +130,15 @@ Deliberately NOT built: any combined breed × observation risk score (a diagnosi
 
 **Deleting an observation is a hard delete** (`DELETE /api/analyses/{id}`): the row, the poster and the clip all go. Not a soft-delete flag — a guardian removing a bad capture (wrong animal, useless clip) means it should stop affecting the baseline, and an archived row that still counted toward the trend would be a worse lie than no row at all. The control lives in the observation detail view, after the media and analysis are on screen, rather than as an × on a timeline tile: a small delete target beside a tap-to-open thumbnail is a mis-tap waiting to happen, and you should see what you are about to destroy. Two steps, and the second names what goes.
 
+**Is this the same animal?** (`identity_check.py`): one misfiled clip puts a stranger's scores into a pet's baseline, and every deviation, slope and red flag is measured against that baseline — so each upload is screened against the pet it was filed under. It is **not** pet re-identification (an open research problem needing a purpose-trained embedding model); it is a guardrail built from two measured signals, treated very differently:
+
+1. **Species** — YOLO detects by class, so a box exists only because the detector decided cat or dog. Profile says cat, every frame says dog → raise it. This is the half that works, and it needs no calibration.
+2. **Coat colour** — an HSV histogram over the middle of the detection box, averaged over ~5 frames, compared by total-variation distance. Discriminative for a black cat against a ginger one, useless for two tabbies, and moved by lighting as much as by identity. It only speaks when a capture sits further from the pet's own previous captures than those sit from each other (≥3 priors, the same "each pet is its own control" rule as the distress baseline) — **and the alarm is OFF by default** (`IDENTITY_APPEARANCE=1`). The threshold has never been measured on real captures, and a wrong "is this really your pet?" teaches a guardian that this app's warnings are noise, which the red flags cannot afford. The measurement still runs and is stored (`coat_sig`) so `scripts/validate_identity.py` can report whether within-pet and between-pet distances actually separate on real data. Same posture as `ENABLE_POSE`: computed, kept, inspectable, not yet allowed to speak.
+
+Three rules, the same three that quarantine `breed_health.py`: **it never reaches Gemini** (it runs after Pass 2 — telling the model an animal might be the wrong one invites it to go and find differences, and Pass 1 is a lock Pass 2 must honour; a test asserts neither `gemini_service.py` nor the prompt imports it), **it never moves a score**, and **it never blocks or reassigns** — the upload is analysed and logged exactly as asked. It produces a question with the fix attached: `PATCH /api/analyses/{id}` with `pet_id` refiles the observation, and both pets' baselines recompute from what they now own, which is why moving beats delete-and-re-upload.
+
+**The pet's photo as wallpaper** (`media_store.py`, `{pet_id}_wallpaper.jpg`): a full-screen background behind that pet's pages, uploaded from the camera roll or copied from the profile picture. Deliberately **not** offered from the stored captures — everything in the media library is annotated, so a "photo from the timeline" would arrive with a detection box and a distress meter burned into it. Not square-cropped like the avatar (it is rendered `object-fit: cover` at every phone shape, so cropping twice throws away the margin the browser needs), scaled to a 1440px longest edge, and permanent alongside posters and avatars. The scrim is load-bearing: every card in the app is translucent glass, so an arbitrary photo behind it means white type landing on a white cat. A 6px blur removes the high-frequency detail that actually breaks small type — whiskers and grass edges, more than overall brightness — which then lets the dark wash be *lighter* than it would otherwise need to be, so more of the pet shows through, not less. Verified legible against a deliberately bright, noisy worst-case image.
+
 **Every observation keeps its picture** (`media_store.py`): the timeline filmstrip shows a stored poster per capture, and tapping one reopens the complete analysis — the same screen the guardian saw on upload, rendered from the stored `full_json`, not a cut-down "history view" that would drift into a worse product. See *Annotated video storage* below for the retention rules.
 
 **Per-asset temporal data**: every analysis's `timeline` array (per-timestamp distress/zone) is preserved in `full_json`; `get_timeline_feed()` extracts it as `distress_curve` ([{t_sec, distress_score, zone}]) so frontends render per-asset graphs without fetching full records.
@@ -150,6 +168,8 @@ Scientific-validity rules encoded in this layer:
 ### Key design decisions
 
 **Stills are not short videos** (`enforce_image_mode` in `gemini_service.py`): a photo carries no duration and no audio, so anything defined by change over time is unobservable in it. Three layers keep that honest. Pass 1's scene-verification prompt is media-specific — asking a photograph "what sounds can you HEAR" or "what does the animal DO" doesn't just spoil a field, it mints a fabricated ground truth that Pass 2 is then *obliged* to honour, so the image variant asks only for posture, framing, and visible objects, and bans motion verbs outright. Pass 2's IMAGE MODE addendum lists what a frozen frame cannot show (movement, wag lateralisation, vocalisations, sequence, repetition) and what it shows well (FACS, posture, ear/tail position — and the Feline Grimace Scale, which was *validated* on stills, so for a cat a photo is the instrument's intended input rather than a compromise). Then the structure is clamped server-side rather than trusted: audio lists emptied, timeline and `interpret_lines` collapsed to one entry at 0:00. The frontend follows — no scrub-chart, no waveform, no subtitle track, and the single POV line becomes a fixed caption.
+
+**The speech bubble opens when they speak** (`Dashboard.jsx`): the pet-POV caption used to appear on a four-second timer over whatever was on screen, which meant a speech bubble floating above a silent cat — the metaphor telling a small lie every few seconds in a product whose whole argument is that it doesn't. It is now driven by the MEASURED vocalization events (`_audio_metrics.vocalization_events`): *when* a sound happened is DSP, *what it meant* is Gemini, the same division of labour as the audio timeline. A POV line is matched to the nearest measured sound within 2.5 s (the model's timestamps are approximate, the DSP's are not), one line per sound; lines with no sound near them get no bubble, and a clip with no sounds says so in the controls rather than silently doing nothing. Opaque blue panel with bold white type at 16px — the old caption was 14px white italic on a zone-tinted panel, and white on amber is about 2:1, which fails hardest on a phone in daylight over moving footage. Zone is carried by a dot, never by the text's background.
 
 **Two-pass hallucination prevention:** Gemini runs twice. Pass 1 (`run_scene_verification`) locks in what is literally visible as a JSON ground-truth object. Pass 2 (`analyze_video_with_context`) receives that object as a hard constraint and cannot contradict it. This was the core fix for the original problem of Gemini inventing scenarios.
 
@@ -182,6 +202,7 @@ Scientific-validity rules encoded in this layer:
 | `app/services/video_annotator.py` | Frame-by-frame rendering of bounding boxes, skeleton, breed tag, distress meter, event/POV text strips |
 | `app/services/media_store.py` | Persistent media library under `$DATA_DIR/media` — posters + annotated clips, budget-capped eviction |
 | `app/services/breed_health.py` | Breed predisposition context and the capture plan it drives — population data, quarantined from the pipeline |
+| `app/services/identity_check.py` | Is this the same animal? Measured species + coat-colour screen against the pet's own history — quarantined from the pipeline, never scores, never blocks |
 | `app/prompts/ethological_prompt.py` | The entire Gemini system prompt — output schema, behavioural frameworks, FACS codes, morphological normalisation rules, YOLO integration guidance |
 
 ### Response shape (key fields)
@@ -233,7 +254,8 @@ The prompt (`ethological_prompt.py`) encodes peer-reviewed frameworks that Gemin
 | `ENABLE_POSE` | No | Set `1` ONLY with an animal-trained pose model in `YOLO_POSE_MODEL`. Off by default: human COCO-17 keypoints fit a human skeleton to pets and fabricated the spinal angle |
 | `YOLO_MODEL` | No | Detector weights (default `yolo11m.pt`). Measured detection rate on a real cat clip: nano 3%, small 34%, **medium 49%**, large 45%, xlarge 48%. Set `yolo11s.pt` to trade detection rate for latency |
 | `DATA_DIR` | Production | Directory for the SQLite longitudinal DB and the media library (mount a Railway volume here; default `./data` is ephemeral) |
-| `MEDIA_MAX_MB` | No | Size cap for stored annotated clips (default 2000). Past it, the oldest clips are evicted; posters are never evicted |
+| `MEDIA_MAX_MB` | No | Size cap for stored annotated clips (default 2000). Past it, the oldest clips are evicted; posters, avatars and wallpapers are never evicted |
+| `IDENTITY_APPEARANCE` | No | Set `1` ONLY after `scripts/validate_identity.py` shows within-pet and between-pet coat distances separate on real data. Off by default: the species half of the identity screen always runs, the coat-colour half measures and stores but never raises |
 
 ### System dependencies
 

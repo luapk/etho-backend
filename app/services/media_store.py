@@ -59,7 +59,7 @@ _IMAGE_EXT = ".jpg"
 # Small, permanent artefacts. Evicting these would cost the product something
 # the record can't replace, and they're tens of KB each. Kept as one predicate
 # because three separate places have to agree on what survives.
-_KEEP_SUFFIXES = ("_poster.jpg", "_avatar.jpg")
+_KEEP_SUFFIXES = ("_poster.jpg", "_avatar.jpg", "_wallpaper.jpg")
 
 
 def _is_permanent(filename: str) -> bool:
@@ -206,6 +206,69 @@ def delete_avatar(pet_id: str) -> bool:
         return False
 
 
+# ── Wallpaper ────────────────────────────────────────────────────────────────
+# The full-screen background behind the whole app while this pet is open.
+#
+# Uploaded from the guardian's camera roll, or copied from the profile picture
+# — deliberately NOT offered from the stored captures, because everything the
+# library keeps is ANNOTATED: detection box, distress meter, caption strips. A
+# wallpaper with a green rectangle and "Distress 22 - LOW" burned into it is a
+# screenshot of the tool, not a picture of the animal.
+#
+# Not square-cropped like the avatar: this is displayed with object-fit cover
+# across every phone shape there is, and cropping twice throws away the margin
+# the browser needs to do that well.
+WALLPAPER_MAX_EDGE = 1440
+WALLPAPER_QUALITY = 82
+
+
+def wallpaper_path(pet_id: str) -> Optional[str]:
+    if not _safe(pet_id):
+        return None
+    p = os.path.join(media_root(), f"{pet_id}_wallpaper.jpg")
+    return p if os.path.exists(p) else None
+
+
+def has_wallpaper(pet_id: str) -> bool:
+    return wallpaper_path(pet_id) is not None
+
+
+def save_wallpaper(pet_id: str, source_path: str) -> bool:
+    """Store a pet's background photo, scaled down but not reshaped."""
+    if not _safe(pet_id) or not source_path or not os.path.exists(source_path):
+        return False
+    try:
+        import cv2
+    except Exception:
+        return False
+    try:
+        img = cv2.imread(source_path)
+        if img is None:
+            return False
+        h, w = img.shape[:2]
+        longest = max(h, w)
+        if longest > WALLPAPER_MAX_EDGE:
+            k = WALLPAPER_MAX_EDGE / longest
+            img = cv2.resize(img, (max(1, int(w * k)), max(1, int(h * k))),
+                             interpolation=cv2.INTER_AREA)
+        return bool(cv2.imwrite(os.path.join(media_root(), f"{pet_id}_wallpaper.jpg"),
+                                img, [int(cv2.IMWRITE_JPEG_QUALITY), WALLPAPER_QUALITY]))
+    except Exception as e:
+        print(f"  ⚠ Could not store wallpaper for {pet_id}: {e}")
+        return False
+
+
+def delete_wallpaper(pet_id: str) -> bool:
+    path = wallpaper_path(pet_id)
+    if not path:
+        return False
+    try:
+        os.unlink(path)
+        return True
+    except OSError:
+        return False
+
+
 def save_for_analysis(analysis_id: str, media_type: str,
                       annotated_path: str = None,
                       original_path: str = None) -> dict:
@@ -322,6 +385,7 @@ def storage_status() -> dict:
     used = library_bytes()
     posters = 0
     avatars = 0
+    wallpapers = 0
     clips = 0
     try:
         for name in os.listdir(media_root()):
@@ -329,6 +393,8 @@ def storage_status() -> dict:
                 posters += 1
             elif name.endswith("_avatar.jpg"):
                 avatars += 1
+            elif name.endswith("_wallpaper.jpg"):
+                wallpapers += 1
             else:
                 clips += 1
     except Exception:
@@ -379,8 +445,9 @@ def storage_status() -> dict:
         "clips_stored": clips,
         "posters_stored": posters,
         "avatars_stored": avatars,
+        "wallpapers_stored": wallpapers,
         "used_mb": round(used / (1024 * 1024), 1),
         "budget_mb": BUDGET_MB,
         "note": ("Annotated clips are evicted oldest-first past the budget; "
-                 "timeline posters and pet avatars are always kept."),
+                 "timeline posters, pet avatars and wallpapers are always kept."),
     }
