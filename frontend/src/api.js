@@ -165,21 +165,46 @@ export const annotatedMediaUrl = (mediaId) =>
  * Callers own the returned URL and must revokeObjectURL it on unmount.
  */
 
+/*
+ * "Not stored" and "couldn't load" are different problems that look identical
+ * on screen — both give you a blank tile. Swallowing every error the same way
+ * makes an auth or CORS failure indistinguishable from a record that legitimately
+ * has no picture, which is exactly the kind of thing that wastes an afternoon.
+ *
+ * So: 404 resolves to null (a real, expected state), and everything else is
+ * reported — logged with the reason, and surfaced to callers that can show it.
+ */
 const asObjectUrl = (path) =>
-  client.get(path, { responseType: 'blob' }).then((r) => URL.createObjectURL(r.data));
+  client
+    .get(path, { responseType: 'blob' })
+    .then((r) => URL.createObjectURL(r.data))
+    .catch((err) => {
+      if (err.response?.status === 404) return null;
+      const why = friendlyError(err);
+      console.warn(`[etho] could not load ${path} — ${why}`);
+      const wrapped = new Error(why);
+      wrapped.status = err.response?.status;
+      throw wrapped;
+    });
 
-/** A pet's profile picture. Resolves null when they haven't got one. */
+/** A pet's profile picture. null when they haven't got one, or it failed. */
 export const fetchPetAvatar = (petId) =>
   asObjectUrl(`/api/pets/${petId}/avatar`).catch(() => null);
 
-/** Timeline thumbnail. Resolves null when none was stored. */
+/** Timeline thumbnail. null when none was stored, or it failed. */
 export const fetchPoster = (analysisId) =>
   asObjectUrl(`/api/analyses/${analysisId}/poster`).catch(() => null);
 
 /**
- * The stored annotated clip/photo.
- * Resolves null when it has been evicted — old records keep their analysis and
- * poster but not always the video, and that's a normal state, not an error.
+ * The stored annotated clip/photo, as { url, reason }.
+ *
+ * reason is null on success, 'absent' when the server has no media for this
+ * record (evicted, or logged before media was kept — a normal end state), and
+ * 'error' with a `detail` message when the request itself failed. The detail
+ * view says which, because "the clip aged out" and "your API key is wrong"
+ * need completely different responses from the person reading the screen.
  */
 export const fetchAnalysisMedia = (analysisId) =>
-  asObjectUrl(`/api/analyses/${analysisId}/media`).catch(() => null);
+  asObjectUrl(`/api/analyses/${analysisId}/media`)
+    .then((url) => ({ url, reason: url ? null : 'absent' }))
+    .catch((err) => ({ url: null, reason: 'error', detail: err.message }));

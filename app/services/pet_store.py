@@ -432,6 +432,27 @@ def get_full_results(pet_id: str, limit: int = 200) -> list:
             for r in rows]
 
 
+def count_analyses() -> int:
+    """Total analyses on record. Used by /health to report what fraction of the
+    record actually has pictures — the one number that separates "the backend
+    isn't storing media" from "these records simply predate it"."""
+    try:
+        with _lock, _connect() as conn:
+            return conn.execute("SELECT COUNT(*) AS n FROM analyses").fetchone()["n"]
+    except Exception:
+        return 0
+
+
+def analysis_ids(limit: int = 100000) -> list:
+    """All analysis IDs, for filesystem-side coverage checks."""
+    try:
+        with _lock, _connect() as conn:
+            rows = conn.execute("SELECT id FROM analyses LIMIT ?", (limit,)).fetchall()
+        return [r["id"] for r in rows]
+    except Exception:
+        return []
+
+
 def get_analysis(analysis_id: str):
     with _lock, _connect() as conn:
         row = conn.execute("SELECT * FROM analyses WHERE id = ?", (analysis_id,)).fetchone()

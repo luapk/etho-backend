@@ -22,7 +22,7 @@ export default function AnalysisDetail({ analysisId, onBack }) {
   const [record, setRecord] = useState(null);
   const [petName, setPetName] = useState('');
   const [mediaUrl, setMediaUrl] = useState(null);
-  const [mediaGone, setMediaGone] = useState(false);
+  const [mediaState, setMediaState] = useState(null);   // { reason, detail }
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -32,7 +32,7 @@ export default function AnalysisDetail({ analysisId, onBack }) {
     setRecord(null);
     setPetName('');
     setMediaUrl(null);
-    setMediaGone(false);
+    setMediaState(null);
     setError(null);
 
     getAnalysis(analysisId)
@@ -49,14 +49,14 @@ export default function AnalysisDetail({ analysisId, onBack }) {
       })
       .catch((e) => { if (!cancelled) setError(friendlyError(e)); });
 
-    fetchAnalysisMedia(analysisId).then((url) => {
+    fetchAnalysisMedia(analysisId).then(({ url, reason, detail }) => {
       if (cancelled) {
         if (url) URL.revokeObjectURL(url);
         return;
       }
       objectUrl = url;
       if (url) setMediaUrl(url);
-      else setMediaGone(true);
+      else setMediaState({ reason, detail });
     });
 
     return () => {
@@ -103,13 +103,20 @@ export default function AnalysisDetail({ analysisId, onBack }) {
         onBack={onBack}
         headerNote={`${petName ? `${petName} · ` : ''}${observed}`}
       />
-      {mediaGone && (
+      {mediaState && (
         <div className="max-w-5xl mx-auto px-6 pb-10 -mt-6">
-          <p className="font-roboto text-white/50 text-xs text-center">
-            The {record.media_type === 'image' ? 'photo' : 'clip'} itself is no
-            longer stored — older media is cleared to make room. Everything
-            measured from it is kept.
-          </p>
+          {mediaState.reason === 'error' ? (
+            <p className="font-roboto text-amber-200/90 text-xs text-center">
+              The {record.media_type === 'image' ? 'photo' : 'clip'} couldn't be
+              loaded — {mediaState.detail} The analysis below is unaffected.
+            </p>
+          ) : (
+            <p className="font-roboto text-white/50 text-xs text-center">
+              No {record.media_type === 'image' ? 'photo' : 'clip'} is stored for
+              this observation — either it predates Etho keeping media, or it has
+              been cleared to make room. Everything measured from it is kept.
+            </p>
+          )}
         </div>
       )}
     </>

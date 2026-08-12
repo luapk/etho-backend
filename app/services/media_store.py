@@ -333,8 +333,20 @@ def storage_status() -> dict:
                 clips += 1
     except Exception:
         pass
+    # How much of the record actually has a picture. This is the number that
+    # tells a deploy apart: posters == 0 with analyses > 0 means the backend
+    # never wrote any (bad DATA_DIR, or every record predates the feature),
+    # whereas posters > 0 means storage works and anything missing on screen
+    # is a frontend or auth problem.
+    logged = pet_store.count_analyses()
+    with_poster = sum(1 for a in pet_store.analysis_ids() if has_poster(a))
+
     return {
         "dir": media_root(),
+        "analyses_logged": logged,
+        "analyses_with_poster": with_poster,
+        "coverage": (f"{with_poster}/{logged} observations have a stored picture"
+                     if logged else "no observations logged yet"),
         "clips_stored": clips,
         "posters_stored": posters,
         "avatars_stored": avatars,

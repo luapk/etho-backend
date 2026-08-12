@@ -463,6 +463,18 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                 <h2 className="font-roboto font-bold text-white">Every capture</h2>
                 <span className="font-roboto text-white/50 text-xs">Scroll · tap for detail</span>
               </div>
+              {/* Why a filmstrip with no pictures. Media storage arrived after
+                  the first releases, so early records are text-only and always
+                  will be — the media was never kept. Saying so beats leaving a
+                  row of grey placeholders to be interpreted as a bug. */}
+              {analyses.length > 0 && !analyses.some((a) => a.has_poster) && (
+                <p className="font-roboto text-white/45 text-xs mb-2 px-1">
+                  These observations were recorded before Etho started keeping
+                  the pictures, so there's nothing to show for them. New uploads
+                  will appear here with their thumbnails.
+                </p>
+              )}
+
               <div className="flex gap-3 overflow-x-auto pb-3 scroll-container">
                 {items.map((item, idx) => {
                   if (item.type === 'weight') {
