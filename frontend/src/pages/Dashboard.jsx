@@ -482,6 +482,70 @@ function buildSpeechMoments(analysisData) {
   return out.sort((a, b) => a.from - b.from);
 }
 
+/* ── What the animal LOOKS like ────────────────────────────────────────────
+ *
+ * Sits above everything, including the score. Behaviour and body come apart:
+ * a dog with a badly swollen face can wag, eat and play, so the distress score
+ * beneath this card may well be green — and it should be, because it is
+ * reading a mood, not a muzzle. This card exists so that green never reads as
+ * "nothing to worry about" when something visible is wrong.
+ *
+ * Observations, never diagnoses. It says what is on the picture and that a vet
+ * should look; it does not say what caused it.
+ */
+function PhysicalFindings({ findings }) {
+  const urgent = findings.some((f) => f.urgent);
+  return (
+    <div className={`glass-card rounded-2xl p-5 border-2 ${
+      urgent ? 'border-red-400/70' : 'border-amber-300/60'}`}>
+      <div className="flex items-start gap-3">
+        <AlertTriangle className={`w-6 h-6 flex-none mt-0.5 ${
+          urgent ? 'text-red-300' : 'text-amber-300'}`} />
+        <div className="flex-1">
+          <h2 className="font-roboto font-black text-white text-lg">
+            {urgent
+              ? 'Something visible here needs a vet'
+              : 'Something visible worth mentioning to your vet'}
+          </h2>
+          <p className="font-roboto text-white/70 text-sm mt-1">
+            {urgent
+              ? "Please contact your vet today. This is what can be seen in the picture — it isn't a diagnosis, and only a vet can say what's causing it."
+              : "Seen in the picture, not diagnosed. Worth raising at their next appointment."}
+          </p>
+
+          <ul className="mt-3 space-y-2">
+            {findings.map((f, i) => (
+              <li key={i} className="rounded-xl bg-black/25 p-3">
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <span className="font-roboto text-white font-bold text-sm">{f.finding}</span>
+                  {f.urgent && (
+                    <span className="px-2 py-0.5 rounded bg-red-500/25 text-red-200 text-[10px] font-bold uppercase tracking-wide whitespace-nowrap">
+                      See a vet today
+                    </span>
+                  )}
+                </div>
+                <p className="font-roboto text-white/55 text-xs mt-1">
+                  {[f.location, f.asymmetric ? 'one side only' : null,
+                    f.confidence ? `${f.confidence} confidence` : null]
+                    .filter(Boolean).join(' · ')}
+                </p>
+                {f.evidence && (
+                  <p className="font-roboto text-white/45 text-xs mt-1">{f.evidence}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+
+          <p className="font-roboto text-white/35 text-xs mt-3">
+            This is separate from the behaviour score below — an animal can seem
+            perfectly happy and still have something that needs looking at.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PetSpeechBubble({ subtitle }) {
   const color = ZONE_CONFIG[subtitle.zone]?.color || '#e2e8f0';
   return (
@@ -851,6 +915,10 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
      underneath. On a fresh upload the running order is different — the score
      is the headline there — so both blocks are hoisted into variables and
      placed rather than duplicated. */
+  const physicalFindings = Array.isArray(analysisData.physical_observations)
+    ? analysisData.physical_observations.filter((f) => f && f.finding)
+    : [];
+
   /* Only the two states that need the guardian. A pass and an "unverified"
      are both fine and neither is worth a card on a page this long. */
   const identityFlag =
@@ -1027,8 +1095,14 @@ function Dashboard({ analysisData, videoUrl, mediaType, onViewTimeline, onBack, 
       )}
 
       <div className="max-w-5xl mx-auto px-6 pb-12 space-y-6">
-        {/* Above everything, on both layouts: if this might not be the right
-            animal, that changes how you read every number underneath it. */}
+        {/* Physical findings outrank everything else on the page, including
+            the identity question and the score. */}
+        {physicalFindings.length > 0 && (
+          <PhysicalFindings findings={physicalFindings} />
+        )}
+
+        {/* Then: if this might not be the right animal, that changes how you
+            read every number underneath it. */}
         {identityFlag && (
           <IdentityNotice check={identityFlag} analysisId={analysisData.analysis_id} />
         )}

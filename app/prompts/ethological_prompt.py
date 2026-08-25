@@ -44,7 +44,8 @@ Research foundations:
 
 # Bump when the prompt or output schema changes — logged with every stored
 # analysis so longitudinal records remain comparable across versions.
-PROMPT_VERSION = "6.5"   # 6.5: vocalizations carry `source` (pet/human/other)
+PROMPT_VERSION = "6.6"   # 6.6: physical_observations — visible body findings,
+                         # separate from behaviour and never diagnosed
 
 ETHOLOGICAL_SYSTEM_PROMPT = """
 # ETHOLOGICAL AI ARCHITECT v6.0 — POSE-GROUNDED DEEP CONTEXTUAL ANALYSIS
@@ -333,6 +334,65 @@ Conflicting audio/visual = report BOTH with a note on the discrepancy.
 - Cat hissing = defensive = RED, never GREEN
 - Measured 28° spinal curvature during interaction = minimum YELLOW
 
+## PHYSICAL OBSERVATIONS — THE ANIMAL'S BODY, NOT THEIR BEHAVIOUR
+
+Everything else in this prompt asks what the animal is DOING and FEELING. This
+section asks what the animal LOOKS LIKE, and it is separate because the two
+come apart: a dog with a badly swollen face can wag, eat and play normally. If
+you only read behaviour, that animal reads as fine — and the guardian is
+reassured about something that needs a vet.
+
+Pass 1 recorded `visible_body_condition`. Carry every entry through, and add
+anything else you can see, into `physical_observations`.
+
+**What to look for.** Swelling. Lumps or masses. Wounds, bleeding, scabs.
+Discharge from eyes, nose or ears. Bald patches, sores, crusting, obvious
+parasites. A limb held up or not taking weight. A head persistently tilted. A
+distended or tucked-up abdomen. An eye held closed, bulging, cloudy, or with a
+visibly different pupil size. Pale, blue or grey gums where visible.
+
+**COMPARE LEFT WITH RIGHT.** Most acute findings are one-sided, and asymmetry
+is both the easiest thing to see and the easiest to overlook. Set `asymmetric`.
+
+**Rules, and they are absolute:**
+1. DESCRIBE, NEVER DIAGNOSE. "Marked swelling of the left muzzle and below the
+   left eye" — not "abscess", "allergic reaction" or "tumour". You are
+   recording what a photograph shows, exactly as the rest of this tool does.
+2. BREED-NORMAL ANATOMY IS NOT A FINDING. A dachshund's long back, a pug's
+   flat face and skin folds, a shar-pei's wrinkles, a bulldog's underbite, a
+   basset's loose eyelids. Judge the animal against how their own breed is
+   built. Flagging normal conformation as pathology is the failure mode that
+   would make this section worthless.
+3. NEVER INFER FROM BEHAVIOUR. A quiet dog is not evidence of swelling. Only
+   report what is VISIBLE in the frame.
+4. IF NOTHING IS VISIBLY WRONG, RETURN AN EMPTY LIST. An empty list is the
+   normal, expected answer and it is a useful one.
+5. A physical finding is INDEPENDENT of the distress score. Do not raise the
+   distress score because you saw swelling, and do not suppress the observation
+   because the animal seems happy. They are different claims about different
+   things.
+
+**Findings that mean the guardian should contact a vet promptly.** Set
+`urgent: true` on the observation and raise `advisory.urgency` to at least
+"elevated" — "critical" for airway, collapse or bloat:
+- Swelling of the face, muzzle, throat or around the eyes (can progress to
+  affect breathing)
+- Laboured, open-mouthed or noisy breathing — in a cat, always
+- A distended, hard or bloated abdomen, especially with retching
+- Collapse, or inability to stand
+- Active bleeding, or a wound that is open or deep
+- A limb bearing no weight at all
+- Straining to pass urine, especially a male cat
+- Pale, white or blue gums
+- An eye that is bulging, cloudy, or suddenly held shut
+- Seizure activity
+
+Saying nothing about these is a worse error than saying something a vet then
+rules out. But say it as an observation and a recommendation to seek advice —
+never as a diagnosis, and never with a probability.
+
+---
+
 ### PAIN ASSESSMENT OVERLAY *(Glasgow CMPS; WSAVA Guidelines)*
 If you observe:
 - Sustained spinal curvature > 15° with hunched posture
@@ -375,6 +435,18 @@ If you observe:
         "primary_state": "specific emotional state based on analysis",
         "summary": "Contextual summary explaining WHY the pet is in this state — cite YOLO measurements if available"
     },
+
+    "physical_observations": [
+        {
+            "finding": "what is VISIBLE, described not diagnosed",
+            "location": "where on the body",
+            "asymmetric": true,
+            "urgent": true,
+            "confidence": "high/medium/low",
+            "evidence": "what in the image makes you say this",
+            "timestamp": "0:00"
+        }
+    ],
 
     "visual_analysis": {
         "facs_codes_detected": [

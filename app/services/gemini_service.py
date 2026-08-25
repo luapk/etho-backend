@@ -122,10 +122,25 @@ Respond with JSON:
     "objects_visible": ["list only objects you can CLEARLY see"],
     "visible_posture": ["the main animal's POSTURE and POSITION as frozen here — e.g. 'lying on left side', 'ears flattened back', 'tail tucked under body'. Positions, not actions."],
     "framing": "close-up of face / head and shoulders / whole body / partial — and whether the face is visible",
+    "visible_body_condition": [
+        {"finding": "what you SEE, in plain words — e.g. 'swelling on the left side of the muzzle', 'cloudy left eye', 'bald patch on the right flank', 'head held tilted to one side'",
+         "location": "where on the body",
+         "asymmetric": true/false}
+    ],
     "scene_summary": "2 sentences describing ONLY what you can verify seeing in this frame"
 }
 
 CRITICAL:
+- BODY CONDITION: look at the animal itself, not just what it is doing.
+  Swelling, lumps, wounds, bleeding, discharge from eyes/nose/ears, bald
+  patches, a held-up limb, a head tilt, a distended belly, a visibly closed or
+  bulging eye. COMPARE LEFT WITH RIGHT — most of these show up on one side
+  only, and asymmetry is the easiest thing to see and the easiest to miss.
+- Describe, never diagnose. 'Swelling below the left eye', NOT 'abscess'.
+- Breed-normal anatomy is NOT a finding. A dachshund's long back, a pug's flat
+  face, a shar-pei's wrinkles, a bulldog's underbite — these are how the animal
+  is built. Only note what looks unusual FOR THAT ANIMAL'S BREED.
+- If nothing looks unusual, return an EMPTY LIST. Do not pad it.
 - NO verbs of motion. Not 'walking', 'wagging', 'approaching', 'trembling'.
   Describe the pose, not what produced it.
 - NO sounds. There is no audio in a photograph.
@@ -152,10 +167,25 @@ Respond with JSON:
     "key_actions": ["list what the main animal ACTUALLY DOES - be specific"],
     "audio_description": "what sounds can you HEAR in this video",
     "video_duration_estimate": "approximately X seconds",
+    "visible_body_condition": [
+        {"finding": "what you SEE, in plain words — e.g. 'swelling on the left side of the muzzle', 'cloudy left eye', 'bald patch on the right flank', 'head held tilted to one side'",
+         "location": "where on the body",
+         "asymmetric": true/false}
+    ],
     "scene_summary": "2 sentences describing ONLY what you can verify seeing"
 }
 
 CRITICAL: 
+- BODY CONDITION: look at the animal itself, not just what it is doing.
+  Swelling, lumps, wounds, bleeding, discharge from eyes/nose/ears, bald
+  patches, a held-up limb, a head tilt, a distended belly, a visibly closed or
+  bulging eye. COMPARE LEFT WITH RIGHT — most of these show up on one side
+  only, and asymmetry is the easiest thing to see and the easiest to miss.
+- Describe, never diagnose. 'Swelling below the left eye', NOT 'abscess'.
+- Breed-normal anatomy is NOT a finding. A dachshund's long back, a pug's flat
+  face, a shar-pei's wrinkles, a bulldog's underbite — these are how the animal
+  is built. Only note what looks unusual FOR THAT ANIMAL'S BREED.
+- If nothing looks unusual, return an EMPTY LIST. Do not pad it.
 - If you see a cat watching small animals in a cage, say that
 - If you see a cat at a door, say that
 - Do NOT confuse one scenario for another
@@ -533,6 +563,105 @@ def resolve_vocal_source(vocalization: dict) -> str:
     return "other"
 
 
+# ── Physical observations ────────────────────────────────────────────────────
+#
+# Everything else this tool produces is about behaviour and emotional state. A
+# dog with a badly swollen face can wag, eat and play — so on behaviour alone
+# that animal reads as fine, and the guardian is actively reassured about
+# something that needs a vet. That is the false-reassurance failure, and it is
+# the one that does harm.
+#
+# The urgency floor below is enforced in code, not left to the model. A model
+# that correctly reports "marked swelling of the left muzzle" and then sets
+# urgency to "routine" has produced a worse output than one that missed it,
+# because the guardian reads the urgency and not the JSON.
+
+_URGENCY_RANK = {"routine": 0, "elevated": 1, "critical": 2}
+
+# Visible findings where the standard first-aid answer is "phone a vet now".
+# Matched against the model's own words as a backstop to its `urgent` flag —
+# two independent paths to the same escalation, because missing one of these
+# costs more than an unnecessary phone call.
+#
+# Swelling is matched as (swelling word + body region) rather than as fixed
+# phrases. A fixed list looks fine until you meet real output: the finding that
+# prompted all of this reads "Marked swelling of the left muzzle and below the
+# left eye", and every literal phrase — "facial swelling", "swollen muzzle" —
+# walks straight past it, because a side or a qualifier sits between the words.
+_SWELLING_WORDS = ("swelling", "swollen", "puffy", "puffiness", "enlarged",
+                   "distended", "distension", "bloated")
+
+# Regions where swelling is an airway, ocular or GDV concern.
+_URGENT_REGIONS = ("face", "facial", "muzzle", "snout", "cheek", "jaw", "chin",
+                   "lip", "throat", "neck", "head", "eye", "eyelid", "orbit",
+                   "tongue", "abdomen", "abdominal", "belly", "stomach")
+
+_URGENT_PHRASES = (
+    "laboured breathing", "labored breathing", "open-mouth breathing",
+    "open mouthed breathing", "open-mouthed breathing", "difficulty breathing",
+    "struggling to breathe", "gasping", "blue tongue",
+    "collapse", "collapsed", "unable to stand", "cannot stand", "can't stand",
+    "unresponsive",
+    "active bleeding", "bleeding heavily", "open wound", "deep wound",
+    "not bearing weight", "non-weight-bearing", "not weight bearing",
+    "holding the leg up", "holding a leg up", "unable to bear weight",
+    "straining to urinate", "straining to pass urine",
+    "pale gums", "white gums", "blue gums", "grey gums", "gray gums",
+    "bulging eye", "protruding eye", "cloudy eye", "eye held shut",
+    "eye held closed", "eye is held closed", "squinting",
+    "seizure", "convulsing", "fitting", "tremoring uncontrollably",
+    "prolapse", "retching",
+)
+
+
+def _is_urgent_finding(obs: dict) -> bool:
+    if obs.get("urgent") is True:
+        return True
+    text = " ".join(str(obs.get(k) or "")
+                    for k in ("finding", "location", "evidence")).lower()
+    if any(p in text for p in _URGENT_PHRASES):
+        return True
+    # Swelling anywhere on the head, throat or abdomen. Word-level rather than
+    # phrase-level so wording and word order can't route around it.
+    return (any(w in text for w in _SWELLING_WORDS)
+            and any(r in text for r in _URGENT_REGIONS))
+
+
+def normalise_physical_observations(result: dict) -> dict:
+    """Clean the physical findings and floor the advisory urgency against them.
+
+    Two floors:
+      any visible finding      → at least "elevated" (worth raising with a vet)
+      an urgent-category one   → "critical"
+
+    A finding never moves the distress score. Distress is a reading of the
+    animal's emotional state; swelling is a fact about their body. Merging them
+    would make a calm animal with a problem look distressed, and an anxious
+    animal with no problem look ill.
+    """
+    raw = result.get("physical_observations")
+    obs = [o for o in raw if isinstance(o, dict) and str(o.get("finding") or "").strip()] \
+        if isinstance(raw, list) else []
+
+    urgent_any = False
+    for o in obs:
+        o["urgent"] = _is_urgent_finding(o)
+        urgent_any = urgent_any or o["urgent"]
+    result["physical_observations"] = obs
+
+    if not obs:
+        return result
+
+    advisory = result.setdefault("advisory", {})
+    current = str(advisory.get("urgency") or "routine").lower()
+    floor = "critical" if urgent_any else "elevated"
+    if _URGENCY_RANK.get(current, 0) < _URGENCY_RANK[floor]:
+        advisory["urgency"] = floor
+    advisory["physical_finding_count"] = len(obs)
+    advisory["physical_urgent"] = urgent_any
+    return result
+
+
 def validate_and_enrich_response(result: dict, scene_context: dict) -> dict:
     """
     Validate response structure and add any missing fields with defaults.
@@ -561,6 +690,7 @@ def validate_and_enrich_response(result: dict, scene_context: dict) -> dict:
             "body_posture": "Not assessed",
             "confidence": "medium"
         },
+        "physical_observations": [],
         "audio_analysis": {
             "vocalizations_detected": [],
             "environmental_sounds": [],
@@ -595,6 +725,9 @@ def validate_and_enrich_response(result: dict, scene_context: dict) -> dict:
     
     # Inject verified scene context
     result["_verified_scene"] = scene_context
+
+    # Visible body findings, and the urgency floor they impose.
+    normalise_physical_observations(result)
 
     # Stamp who made each sound, so no reader has to guess later.
     aa = result.get("audio_analysis")
@@ -711,6 +844,10 @@ def enforce_image_mode(result: dict) -> dict:
                 first["timestamp"] = "0:00"
             result[key] = [first]
 
+    # Physical findings are deliberately NOT touched here. A photograph is
+    # often the best evidence of swelling there is — sharper than a moving
+    # frame, and the thing an owner instinctively photographs when something
+    # looks wrong. Nothing about a still makes a visible finding less true.
     result["video_type"] = "single_image"
     return result
 

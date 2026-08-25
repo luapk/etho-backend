@@ -86,6 +86,33 @@ def _aggregate_markers(full_results: list) -> list:
     return out
 
 
+def _physical_findings(full_results: list) -> list:
+    """Every visible body finding across the record, newest first.
+
+    Kept as its own section because it is a different KIND of claim from
+    everything else in this report: not a behaviour, not an instrument score,
+    not a measurement from a signal — a description of what is visible on the
+    animal. It is also the only section where the tool will tell a guardian to
+    pick up the phone, so a clinician should be able to see exactly what
+    triggered that and judge it.
+    """
+    out = []
+    for rec in full_results:
+        for obs in (rec.get("result", {}).get("physical_observations") or []):
+            if not isinstance(obs, dict) or not str(obs.get("finding") or "").strip():
+                continue
+            out.append({
+                "date": rec["created_at"],
+                "finding": obs.get("finding"),
+                "location": obs.get("location"),
+                "asymmetric": bool(obs.get("asymmetric")),
+                "urgent": bool(obs.get("urgent")),
+                "confidence": obs.get("confidence"),
+                "evidence": obs.get("evidence"),
+            })
+    return list(reversed(out))
+
+
 def build_report(pet_id: str, reason_for_visit: str = None) -> dict:
     """Assemble the structured report. Returns None if the pet is unknown."""
     pet = pet_store.get_pet(pet_id)
@@ -137,6 +164,7 @@ def build_report(pet_id: str, reason_for_visit: str = None) -> dict:
             "observation_count": len(history),
         },
         "trends": trends,
+        "physical_findings": _physical_findings(full_results),
         "respiratory": {
             "entries": [
                 {"created_at": h["created_at"],
@@ -197,6 +225,16 @@ def build_report(pet_id: str, reason_for_visit: str = None) -> dict:
                 "Weight is compared against typical adult breed ranges "
                 "(sexes combined) as a rough screen only. Body condition "
                 "score (BCS) assessed hands-on remains the clinical standard."
+            ),
+            "physical_findings": (
+                "Visible body findings are described from the media and never "
+                "diagnosed. They are recorded independently of the distress "
+                "score and never alter it: a physical sign is a fact about the "
+                "animal's body, a distress score is an estimate of emotional "
+                "state, and merging them would misrepresent both. Breed-normal "
+                "conformation is explicitly excluded. Absence of a finding is "
+                "NOT evidence of absence — it means nothing was visible in the "
+                "media supplied, at the framing and quality supplied."
             ),
             "baseline_math": (
                 "Baseline = mean +/- SD of all observations except the latest "
@@ -262,6 +300,32 @@ def render_markdown(report: dict) -> str:
     add(f"{p['observation_count']} AI-analysed observation(s) from "
         f"{_fmt(p['first_observation'])} to {_fmt(p['last_observation'])}.")
     add("")
+
+    pf = report.get("physical_findings") or []
+    if pf:
+        add("## Visible Physical Findings")
+        add("")
+        add("Described from the media, NOT diagnosed. Reported here because a "
+            "visible physical sign is independent of the behavioural score — "
+            "an animal can present as settled and still have something that "
+            "needs examination.")
+        add("")
+        add("| Date | Finding | Location | Asymmetric | Flagged urgent | Confidence |")
+        add("|---|---|---|---|---|---|")
+        for f in pf[:20]:
+            add(f"| {f['date'][:10]} | {f['finding']} | {_fmt(f['location'])} "
+                f"| {'yes' if f['asymmetric'] else 'no'} "
+                f"| {'**YES**' if f['urgent'] else 'no'} | {_fmt(f['confidence'])} |")
+        add("")
+        if any(f["urgent"] for f in pf):
+            add("An entry flagged urgent raised the guardian-facing advisory to "
+                "'contact a vet'. That escalation is applied in code from a fixed "
+                "list of presentations (facial/throat/abdominal swelling, "
+                "respiratory difficulty, collapse, active bleeding, "
+                "non-weight-bearing lameness, straining to urinate, pale gums, "
+                "acute ocular signs, seizure activity) and is never left to the "
+                "model's own judgement of urgency.")
+            add("")
 
     add("## Trend Summary")
     add("")
@@ -459,6 +523,7 @@ def render_markdown(report: dict) -> str:
     add(f"- **Weight screening:** {meth['weight_screening']}")
     add(f"- **Baseline math:** {meth['baseline_math']}")
     add(f"- **Per-metric baselines:** {meth['metric_baselines']}")
+    add(f"- **Physical findings:** {meth['physical_findings']}")
     add("- **System versions used:** " + "; ".join(
         f"pipeline {v['pipeline'] or '?'} / prompt {v['prompt'] or '?'} / "
         f"model {v['model'] or '?'}" for v in report["system_versions"]) + ".")

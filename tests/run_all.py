@@ -13,7 +13,7 @@ import subprocess, sys, os
 SUITES = ["test_longitudinal.py", "test_auth_quality.py", "test_timeline_weight.py",
           "test_model_selector.py", "test_capture_batch.py", "test_media_store.py", "test_reading_image.py", "test_breed_health.py",
           "test_annotator_caption.py", "test_identity_check.py",
-          "test_metric_baselines.py"]
+          "test_metric_baselines.py", "test_physical_observations.py"]
 
 here = os.path.dirname(os.path.abspath(__file__))
 root = os.path.dirname(here)
