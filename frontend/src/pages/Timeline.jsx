@@ -3,9 +3,10 @@ import { motion } from 'framer-motion';
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip,
          ReferenceArea, ReferenceLine } from 'recharts';
 import { AlertTriangle, FileText, Scale, Video, Image as ImageIcon,
-         Wind, TrendingUp, TrendingDown, Minus, Plus, Camera, Check, Trash2 } from 'lucide-react';
+         Wind, TrendingUp, TrendingDown, Minus, Plus, Camera, Check, Trash2,
+         Pencil, X } from 'lucide-react';
 import { getTimeline, getTrends, getPet, addWeight, fetchPoster, getCapturePlan,
-         updatePet, deleteAnalysis, friendlyError } from '../api';
+         updatePet, deleteAnalysis, setAnalysisDate, friendlyError } from '../api';
 import { soundColor } from '../components/AudioWaveform';
 
 /*
@@ -30,6 +31,19 @@ const TONE = {
   calm:      { text: 'text-white',      icon: 'text-white/70' },
   watch:     { text: 'text-amber-200',  icon: 'text-amber-300' },
   attention: { text: 'text-red-200',    icon: 'text-red-300' },
+};
+
+/* Where a capture's date came from. Anything in GUESSED_DATE means the file
+   didn't carry one, so the record was dated to the upload day — which is
+   almost never when the behaviour happened. */
+const GUESSED_DATE = new Set(['unknown', 'filename', null, undefined, '']);
+
+const DATE_SOURCE_NOTE = {
+  exif: 'Currently taken from the photo\u2019s own metadata. Changing it marks the date as one you set.',
+  video_metadata: 'Currently taken from the video file. Changing it marks the date as one you set.',
+  filename: 'Guessed from the filename. Your date will be recorded as one you set.',
+  manual: 'You set this date before. It stays marked as set by hand.',
+  unknown: 'The file had no date, so this landed on the day you uploaded it. Your date will be recorded as one you set.',
 };
 
 const zoneOf = (s) => (s == null ? 'yellow' : s <= 33 ? 'green' : s <= 66 ? 'yellow' : 'red');
@@ -226,6 +240,9 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
   const [plan, setPlan] = useState(null);
   const [deleting, setDeleting] = useState(null);      // analysis_id awaiting confirm
   const [busyDelete, setBusyDelete] = useState(false);
+  const [editingDate, setEditingDate] = useState(null); // analysis_id being re-dated
+  const [dateDraft, setDateDraft] = useState('');
+  const [busyDate, setBusyDate] = useState(false);
 
   const load = () => {
     if (!petId) return;
@@ -267,6 +284,38 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
       setError(friendlyError(err));
     } finally {
       setBusyDelete(false);
+    }
+  };
+
+  /* Re-dating a capture from the tile.
+   *
+   * About a fifth of a camera roll has no usable capture date — screenshots
+   * and anything that came through a messaging app lose it — and those land on
+   * the upload day, which bends every trend that runs through them. The
+   * guardian usually knows when it actually happened, and the timeline is
+   * where they SEE it in the wrong place, so that is where the fix belongs.
+   *
+   * The reload afterwards is not just a refresh: the feed is ordered by
+   * observation date, so the tile physically moves, and the baseline, slope
+   * and chart are all recomputed against the new ordering.
+   */
+  const openDateEditor = (item) => {
+    setEditingDate(item.analysis_id);
+    setDateDraft((item.date || '').slice(0, 10));
+  };
+
+  const saveDate = async (analysisId) => {
+    if (!dateDraft) return;
+    setBusyDate(true);
+    try {
+      await setAnalysisDate(analysisId, dateDraft);
+      setEditingDate(null);
+      load();
+      onChanged?.();
+    } catch (err) {
+      setError(friendlyError(err));
+    } finally {
+      setBusyDate(false);
     }
   };
 
@@ -399,12 +448,54 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                         and the confirmation covers the tile so the answer
                         cannot be mis-tapped either. */}
                     <button
+                      onClick={(e) => { e.stopPropagation(); openDateEditor(item); }}
+                      aria-label="Change the date of this observation"
+                      className="tap-compact absolute bottom-1 right-8 z-10 flex items-center justify-center text-white/45 hover:text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.55)] transition-colors"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+
+                    <button
                       onClick={(e) => { e.stopPropagation(); setDeleting(item.analysis_id); }}
                       aria-label="Delete this observation"
                       className="tap-compact absolute bottom-1 right-1 z-10 flex items-center justify-center text-white/45 hover:text-red-300 drop-shadow-[0_1px_3px_rgba(0,0,0,0.55)] transition-colors"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
+
+                    {editingDate === item.analysis_id && (
+                      <div className="absolute inset-0 z-20 rounded-2xl bg-slate-900/90 backdrop-blur-sm flex flex-col justify-center gap-2 p-3">
+                        <div className="flex items-center justify-between">
+                          <p className="font-roboto text-white text-xs font-bold">
+                            When was this taken?
+                          </p>
+                          <button
+                            onClick={() => setEditingDate(null)}
+                            aria-label="Cancel"
+                            className="tap-compact text-white/50 hover:text-white"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <input
+                          type="date"
+                          value={dateDraft}
+                          max={new Date().toISOString().slice(0, 10)}
+                          onChange={(e) => setDateDraft(e.target.value)}
+                          className="w-full px-2 py-2 rounded-lg bg-white/15 border border-white/30 text-white font-roboto text-sm focus:outline-none focus:border-white/70"
+                        />
+                        <p className="font-roboto text-white/50 text-[10px] leading-snug">
+                          {DATE_SOURCE_NOTE[item.capture_time_source] || DATE_SOURCE_NOTE.unknown}
+                        </p>
+                        <button
+                          onClick={() => saveDate(item.analysis_id)}
+                          disabled={busyDate || !dateDraft}
+                          className="px-3 py-2 rounded-lg bg-white/35 hover:bg-white/45 disabled:opacity-40 text-white font-roboto text-xs font-bold"
+                        >
+                          {busyDate ? 'Moving…' : 'Save date'}
+                        </button>
+                      </div>
+                    )}
 
                     {pendingDelete && (
                       <div className="absolute inset-0 z-20 rounded-2xl bg-slate-900/85 backdrop-blur-sm flex flex-col items-center justify-center gap-2 p-3 text-center">
@@ -450,8 +541,17 @@ export default function Timeline({ petId, onOpenVetReport, onUpload, onOpenAnaly
                       />
                       <div className="p-3 space-y-2">
                         <div className="flex items-center justify-between gap-2">
-                          <span className="font-roboto text-white/70 text-xs font-bold">
+                          <span className="font-roboto text-white/70 text-xs font-bold flex items-center gap-1">
                             {fmtDate(item.date)}
+                            {/* A date the tool GUESSED gets a marker. Those
+                                landed on the upload day and drag every trend
+                                that runs through them, and the guardian is the
+                                only one who knows the real one. */}
+                            {GUESSED_DATE.has(item.capture_time_source) && (
+                              <span className="text-amber-300/80" title="Date not in the file — tap the pencil to set it">
+                                ?
+                              </span>
+                            )}
                           </span>
                           <ZoneBadge score={item.distress_score} zone={item.zone} />
                         </div>

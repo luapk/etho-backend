@@ -431,12 +431,14 @@ def get_full_results(pet_id: str, limit: int = 200) -> list:
     context, result}. Used by the vet-report builder and the timeline feed."""
     with _lock, _connect() as conn:
         rows = conn.execute(
-            "SELECT id, created_at, context, full_json FROM analyses "
-            "WHERE pet_id = ? ORDER BY created_at, id LIMIT ?",
+            "SELECT id, created_at, context, capture_time_source, full_json "
+            "FROM analyses WHERE pet_id = ? ORDER BY created_at, id LIMIT ?",
             (pet_id, limit),
         ).fetchall()
     return [{"id": r["id"], "created_at": r["created_at"],
-             "context": r["context"], "result": json.loads(r["full_json"])}
+             "context": r["context"],
+             "capture_time_source": r["capture_time_source"],
+             "result": json.loads(r["full_json"])}
             for r in rows]
 
 
@@ -711,6 +713,11 @@ def get_timeline_feed(pet_id: str, limit: int = 200) -> list:
             "analysis_id": rec["id"],
             "media_type": result.get("_media_kind", "video"),
             "context": rec["context"],
+            # How the date is known. The tile uses this to mark a capture whose
+            # date is a guess — those landed on the upload day and drag every
+            # trend running through them, and the guardian is the only one who
+            # can correct it.
+            "capture_time_source": rec.get("capture_time_source"),
             "distress_score": oa.get("distress_score"),
             "zone": oa.get("zone"),
             "primary_state": oa.get("primary_state"),
